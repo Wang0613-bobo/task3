@@ -48,44 +48,63 @@ classdef NSGAIIPlus < ALGORITHM
                 Problem.FE = Problem.FE + Problem.N;
             end
 
-            %% Task 3: save final population
-            try
-                saveFile = '';
+            %% Task 3 stable export: save final population to MAT
+            iSaveFinalPopulation(Population, Problem);
+        end
+    end
+end
 
-                if ~isempty(Problem.model)
-                    if isfield(Problem.model, 'task3SaveFile')
-                        saveFile = Problem.model.task3SaveFile;
-                    end
-                end
+function iSaveFinalPopulation(Population, Problem)
+    fprintf('[NSGAIIPlus] Task3 final-pop save stage started.\n');
 
-                if isempty(saveFile)
-                    outDir = fullfile(pwd, 'task3_output');
-                    if ~exist(outDir, 'dir')
-                        mkdir(outDir);
-                    end
+    try
+        saveFile = '';
 
-                    tau = NaN;
-                    Q   = NaN;
-
-                    if ~isempty(Problem.model)
-                        if isfield(Problem.model, 'costOfUnitCarbon')
-                            tau = Problem.model.costOfUnitCarbon;
-                        end
-                        if isfield(Problem.model, 'quantityOfCargo')
-                            Q = Problem.model.quantityOfCargo;
-                        end
-                    end
-
-                    saveFile = fullfile(outDir, sprintf('finalPop_tau%.2f_Q%.0f.mat', tau, Q));
-                end
-
-                finalPopulation = Population; %#ok<NASGU>
-                save(saveFile, 'finalPopulation');
-                fprintf('最终种群已保存：%s\n', saveFile);
-
-            catch ME
-                warning('NSGAIIPlus 保存最终种群失败：%s', ME.message);
+        if isprop(Problem,'model') && ~isempty(Problem.model)
+            if isfield(Problem.model, 'task3SaveFile')
+                saveFile = Problem.model.task3SaveFile;
             end
+        end
+
+        if isempty(saveFile)
+            outDir = fullfile(pwd, 'task3_output', 'final_population');
+            if ~exist(outDir, 'dir')
+                mkdir(outDir);
+            end
+
+            tau = NaN;
+            Q = NaN;
+            if isprop(Problem,'model') && ~isempty(Problem.model)
+                if isfield(Problem.model, 'costOfUnitCarbon')
+                    tau = Problem.model.costOfUnitCarbon;
+                elseif isfield(Problem.model, 'carbonTax')
+                    tau = Problem.model.carbonTax;
+                end
+
+                if isfield(Problem.model, 'quantityOfCargo')
+                    Q = Problem.model.quantityOfCargo;
+                elseif isfield(Problem.model, 'baseDemand')
+                    Q = Problem.model.baseDemand;
+                end
+            end
+
+            saveFile = fullfile(outDir, sprintf('finalPop_tau%.2f_Q%.0f.mat', tau, Q));
+        end
+
+        saveDir = fileparts(saveFile);
+        if ~isempty(saveDir) && ~exist(saveDir,'dir')
+            mkdir(saveDir);
+        end
+
+        fprintf('[NSGAIIPlus] Saving final population to: %s\n', saveFile);
+        finalPopulation = Population; %#ok<NASGU>
+        save(saveFile, 'finalPopulation');
+        fprintf('[NSGAIIPlus] Save success.\n');
+
+    catch ME
+        fprintf(2, '[NSGAIIPlus] Save failed: %s\n', ME.message);
+        for k = 1:numel(ME.stack)
+            fprintf(2, '  at %s (line %d)\n', ME.stack(k).name, ME.stack(k).line);
         end
     end
 end
