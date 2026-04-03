@@ -1,0 +1,196 @@
+cd(fileparts(mfilename('fullpath')));
+projectRoot = cd;
+addpath(genpath(projectRoot));
+
+% =========================
+% 1) 路径设置
+% =========================
+resultDir = fullfile(projectRoot, 'result_5_2');
+assert(exist(resultDir, 'dir') == 7, '未找到 result_5_2 文件夹，请先运行 test.m');
+
+outDir = fullfile(projectRoot, 'export_5_2');
+if ~exist(outDir, 'dir')
+    mkdir(outDir);
+end
+
+dataFile = fullfile(projectRoot, 'MyModel', 'data', 'wangluojiegou.txt');
+if ~exist(dataFile, 'file')
+    dataFile = 'wangluojiegou.txt';
+end
+assert(exist(dataFile, 'file') == 2, '未找到 wangluojiegou.txt');
+
+model = initModel(dataFile);
+
+% =========================
+% 2) 读取结果文件
+% =========================
+files = dir(fullfile(resultDir, 'NSGAIIPlus_myObj_tax_*.mat'));
+assert(~isempty(files), 'result_5_2 中未找到 NSGAIIPlus_myObj_tax_*.mat 结果文件。');
+
+taxList_ton = zeros(length(files),1);
+for i = 1:length(files)
+    tok = regexp(files(i).name, 'tax_(\d+)\.mat$', 'tokens', 'once');
+    assert(~isempty(tok), '无法从文件名中识别碳税水平：%s', files(i).name);
+    taxList_ton(i) = str2double(tok{1});
+end
+
+[~, order] = sort(taxList_ton);
+files = files(order);
+taxList_ton = taxList_ton(order);
+
+taxList_kg = taxList_ton / 1000;
+
+% =========================
+% 3) 结果容器
+% 每个碳税水平仅保留一个“代表性折中解”
+% =========================
+nPareto = zeros(length(files),1);
+
+F_cost_rep = zeros(length(files),1);
+F_carbon_rep = zeros(length(files),1);
+
+Cost_L = zeros(length(files),1);
+Cost_M = zeros(length(files),1);
+Cost_U = zeros(length(files),1);
+
+Carbon_L = zeros(length(files),1);
+Carbon_M = zeros(length(files),1);
+Carbon_U = zeros(length(files),1);
+
+CostWidth = zeros(length(files),1);
+CarbonWidth = zeros(length(files),1);
+
+RepX = cell(length(files),1);
+
+for i = 1:length(files)
+    filePath = fullfile(files(i).folder, files(i).name);
+    S = load(filePath);
+    assert(isfield(S,'result'), '文件中未找到 result 变量: %s', filePath);
+
+    finalState = S.result{end,end};
+
+    % -------- 兼容不同保存形式 --------
+    if isstruct(finalState)
+        if isfield(finalState,'best')
+            Pop = finalState.best;
+        else
+            Pop = finalState;
+        end
+    elseif isobject(finalState)
+        try
+            Pop = finalState.best;
+        catch
+            Pop = finalState;
+        end
+    else
+        Pop = finalState;
+    end
+    % --------------------------------
+
+    X = Pop.decs;
+    Y = Pop.objs;
+
+    assert(size(Y,2) == 2, '当前结果不是双目标，请检查模型设置或结果文件。');
+
+    % 再做一次非支配筛选
+    [FrontNo,~] = NDSort(Y,1);
+    keep = FrontNo == 1;
+    X = X(keep,:);
+    Y = Y(keep,:);
+
+    % 去重（按目标去重）
+    [Y, ia] = unique(Y, 'rows', 'stable');
+    X = X(ia,:);
+
+    % 排序（按 F_cost）
+    [~, idxSort] = sort(Y(:,1), 'ascend');
+    Y = Y(idxSort,:);
+    X = X(idxSort,:);
+
+    nPareto(i) = size(Y,1);
+
+    % =========================
+    % 代表性折中解：
+    % 用模糊排序后的双目标在归一化空间中
+    % 到理想点(0,0)距离最小的解
+    % =========================
+    ymin = min(Y, [], 1);
+    ymax = max(Y, [], 1);
+    denom = ymax - ymin;
+    denom(denom == 0) = 1;
+
+    Ynorm = (Y - ymin) ./ denom;
+    dist2ideal = sum(Ynorm.^2, 2);
+    [~, idxRep] = min(dist2ideal);
+
+    xRep = X(idxRep, :);
+    RepX{i} = xRep;
+
+    % 用当前全模糊模型重新评估，提取 detail
+    [objRep, detailRep] = model.getIndividualObjs(xRep, model);
+
+    F_cost_rep(i) = objRep(1);
+    F_carbon_rep(i) = objRep(2);
+
+    Cost_L(i) = detailRep.fuzzyCost(1);
+    Cost_M(i) = detailRep.fuzzyCost(2);
+    Cost_U(i) = detailRep.fuzzyCost(3);
+
+    Carbon_L(i) = detailRep.fuzzyCarbon(1);
+    Carbon_M(i) = detailRep.fuzzyCarbon(2);
+    Carbon_U(i) = detailRep.fuzzyCarbon(3);
+
+    CostWidth(i) = detailRep.fuzzyCostWidth;
+    CarbonWidth(i) = detailRep.fuzzyCarbonWidth;
+end
+
+% =========================
+% 4) 汇总表
+% =========================
+summaryTable = table( ...
+    taxList_ton, ...
+    taxList_kg, ...
+    nPareto, ...
+    F_cost_rep, ...
+    F_carbon_rep, ...
+    Cost_L, Cost_M, Cost_U, ...
+    Carbon_L, Carbon_M, Carbon_U, ...
+    CostWidth, CarbonWidth, ...
+    'VariableNames', { ...
+    'CarbonTax_ton', ...
+    'CarbonTax_kg', ...
+    'nPareto', ...
+    'F_cost_star', ...
+    'F_carbon_star', ...
+    'FuzzyCost_L', 'FuzzyCost_M', 'FuzzyCost_U', ...
+    'FuzzyCarbon_L', 'FuzzyCarbon_M', 'FuzzyCarbon_U', ...
+    'FuzzyCostWidth', 'FuzzyCarbonWidth' ...
+    });
+
+summaryFile = fullfile(outDir, 'Summary_5_2_Pareto.csv');
+writetable(summaryTable, summaryFile);
+
+% =========================
+% 5) 只画这一张图
+% 左轴：模糊排序总碳排放目标
+% 右轴：模糊排序综合经济目标
+% 横轴：碳税价格（元/kg-CO2）
+% =========================
+figure('Color','w');
+
+yyaxis left
+plot(taxList_kg, F_carbon_rep, '-s', 'LineWidth', 1.5, 'MarkerSize', 5);
+ylabel('F_{carbon}^{*}');
+
+yyaxis right
+plot(taxList_kg, F_cost_rep, '-^', 'LineWidth', 1.5, 'MarkerSize', 5);
+ylabel('F_{cost}^{*}');
+
+xlabel('碳税价格 (元/t-CO_2)');
+title('全模糊需求下代表性折中解的目标变化图');
+legend('碳排放量','总成本','Location','best');
+
+saveas(gcf, fullfile(outDir, 'Fig5_2_Cost_Carbon_Trend.png'));
+
+fprintf('\n图已生成：%s\n', fullfile(outDir, 'Fig5_2_Cost_Carbon_Trend.png'));
+fprintf('汇总表已生成：%s\n', summaryFile);

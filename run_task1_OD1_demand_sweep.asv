@@ -1,0 +1,353 @@
+clc; clear; close all;
+
+cd(fileparts(mfilename('fullpath')));
+addpath(genpath(cd));
+
+% =========================================================
+% 任务一：OD1 需求波动—路径转移识别
+% 目标：
+% 1) 固定 Q0 与 alpha
+% 2) 扫描 rho（需求波动强度）
+% 3) 显式构造不确定需求区间 demandBand = [Q_lower, Q_center, Q_upper]
+% 4) 计算并保存等价需求 Qeq
+% 5) 调用算法并保存 Pareto 原始结果
+% =========================================================
+
+%% =========================
+% 1) 基础设置
+% =========================
+fileName = 'wangluojiegou.txt';
+odName = 'OD1';
+
+% -------------------------
+% 需求不确定性实验参数（实验层）
+% -------------------------
+baseDemand = 1000;                    % 基准需求 Q0
+confidenceLevel = 0.80;               % 决策保守度 alpha
+rhoList = [0.05 0.10 0.15 0.20 0.25 0.30];   % 需求波动强度 rho
+
+% -------------------------
+% 输出目录
+% -------------------------
+outDir = fullfile(pwd, 'result_task1_OD1_demandSweep');
+if ~exist(outDir, 'dir')
+    mkdir(outDir);
+end
+
+%% =========================
+% 2) 批量运行
+% =========================
+for i = 1:length(rhoList)
+
+    % 当前参数
+    Q0 = baseDemand;
+    rho = rhoList(i);
+    alpha = confidenceLevel;
+
+    % -------------------------
+    % 显式构造不确定需求区间
+    % -------------------------
+    Q_lower = (1 - rho) * Q0;
+    Q_center = Q0;
+    Q_upper = (1 + rho) * Q0;
+    demandBand = [Q_lower, Q_center, Q_upper];
+
+    % -------------------------
+    % 显式计算等价需求
+    % -------------------------
+    Qeq = (1 - alpha) * Q_lower + alpha * Q_upper;
+
+    % -------------------------
+    % 初始化模型
+    % -------------------------
+    model = initModel(fileName, odName);
+    model.baseDemand = Q0;
+    model.demandUncertaintyRate = rho;
+    model.confidenceLevel = alpha;
+
+    % 与主模型核对
+    Qeq_model = model.getEquivalentDemand(model);
+
+    fprintf('\n==================================================\n');
+    fprintf('任务一运行中：%d / %d\n', i, length(rhoList));
+    fprintf('OD = %s (%s -> %s)\n', model.odName, model.originName, model.destinationName);
+    fprintf('不确定需求区间 demandBand = [%.2f, %.2f, %.2f]\n', ...
+        demandBand(1), demandBand(2), demandBand(3));
+    fprintf('Q0 = %.2f, rho = %.2f, alpha = %.2f\n', Q0, rho, alpha);
+    fprintf('Qeq(script) = %.2f, Qeq(model) = %.2f\n', Qeq, Qeq_model);
+
+    if abs(Qeq - Qeq_model) > 1e-10
+        error('脚本层计算的 Qeq 与模型层 getEquivalentDemand 结果不一致。');
+    end
+
+    %% =========================
+    % 3) 调用算法执行器
+    % =========================
+    [result, algObj, runInfo] = runAlgorithmAndGetResult(model);
+
+    fprintf('算法执行方式 = %s\n', runInfo.execMode);
+    fprintf('结果来源 = %s\n', runInfo.resultSource);
+
+    %% =========================
+    % 4) 提取 Pareto 解
+    % =========================
+    [paretoCost, paretoPos, extractInfo] = extractParetoFromResult(result);
+
+    %% =========================
+    % 5) 保存元信息
+    % =========================
+    meta = struct();
+    meta.taskName = 'Task1_OD1_DemandSweep';
+    meta.odName = model.odName;
+    meta.originName = model.originName;
+    meta.destinationName = model.destinationName;
+
+    meta.baseDemand = Q0;
+    meta.rho = rho;
+    meta.alpha = alpha;
+
+    meta.Q_lower = Q_lower;
+    meta.Q_center = Q_center;
+    meta.Q_upper = Q_upper;
+    meta.demandBand = demandBand;
+
+    meta.Qeq = Qeq;
+    meta.nSol = size(paretoCost, 1);
+
+    %% =========================
+    % 6) 保存文件
+    % =========================
+    saveName = sprintf('OD1_rho_%03d.mat', round(100*rho));
+    savePath = fullfile(outDir, saveName);
+
+    save(savePath, 'result', 'algObj', 'model', 'meta', 'paretoCost', 'paretoPos', 'extractInfo', 'runInfo');
+
+    fprintf('Pareto 解个数 = %d\n', meta.nSol);
+    fprintf('Pareto 提取来源 = %s\n', extractInfo.source);
+    fprintf('结果已保存：%s\n', savePath);
+end
+
+fprintf('\n==================================================\n');
+fprintf('任务一批量运行完成。\n');
+
+
+%% =========================================================
+%  辅助函数1：鲁棒提取 Pareto 解
+% =========================================================
+function [paretoCost, paretoPos, info] = extractParetoFromResult(result)
+
+    paretoCost = [];
+    paretoPos = [];
+
+    info = struct();
+    info.source = '';
+    info.resultClass = class(result);
+    info.resultSize = size(result);
+
+    fprintf('\n----- 开始诊断 result 结构 -----\n');
+    fprintf('class(result) = %s\n', class(result));
+    disp('size(result) = ');
+    disp(size(result));
+
+    % -----------------------------------------------------
+    % 情况A：cell 结构
+    % -----------------------------------------------------
+    if iscell(result)
+        fprintf('检测到 result 为 cell。\n');
+
+        try
+            node = result{end, end};
+            [paretoCost, paretoPos] = readPossibleBest(node);
+            if ~isempty(paretoCost)
+                info.source = 'result{end,end}';
+                return;
+            end
+        catch
+        end
+
+        try
+            node = result{end};
+            [paretoCost, paretoPos] = readPossibleBest(node);
+            if ~isempty(paretoCost)
+                info.source = 'result{end}';
+                return;
+            end
+        catch
+        end
+
+        idxCandidates = max(1, numel(result)-5):numel(result);
+        for k = idxCandidates
+            try
+                node = result{k};
+                [paretoCost, paretoPos] = readPossibleBest(node);
+                if ~isempty(paretoCost)
+                    info.source = sprintf('result{%d}', k);
+                    return;
+                end
+            catch
+            end
+        end
+    end
+
+    % -----------------------------------------------------
+    % 情况B：struct 结构
+    % -----------------------------------------------------
+    if isstruct(result)
+        fprintf('检测到 result 为 struct。\n');
+        disp('fieldnames(result) = ');
+        disp(fieldnames(result));
+
+        try
+            [paretoCost, paretoPos] = readPossibleBest(result);
+            if ~isempty(paretoCost)
+                info.source = 'result struct';
+                return;
+            end
+        catch
+        end
+
+        try
+            node = result(end);
+            [paretoCost, paretoPos] = readPossibleBest(node);
+            if ~isempty(paretoCost)
+                info.source = 'result(end)';
+                return;
+            end
+        catch
+        end
+    end
+
+    % -----------------------------------------------------
+    % 情况C：对象
+    % -----------------------------------------------------
+    if isobject(result)
+        fprintf('检测到 result 为 object。\n');
+        try
+            [paretoCost, paretoPos] = readPossibleBest(result);
+            if ~isempty(paretoCost)
+                info.source = 'result object';
+                return;
+            end
+        catch
+        end
+    end
+
+    fprintf('未识别出 Pareto 解结构。\n');
+
+    try
+        fprintf('---- disp(result) ----\n');
+        disp(result);
+    catch
+    end
+
+    error(['无法从 result 中识别 Pareto 解结构。', ...
+           '请把新的 class(result)、fieldnames(result) 或 disp(result) 贴给我。']);
+end
+
+
+%% =========================================================
+%  辅助函数2：读取“可能的 best 节点”
+% =========================================================
+function [costs, poses] = readPossibleBest(node)
+
+    costs = [];
+    poses = [];
+
+    if isstruct(node) && isfield(node, 'best')
+        [costs, poses] = readCostPos(node.best);
+        if ~isempty(costs)
+            return;
+        end
+    end
+
+    [costs, poses] = readCostPos(node);
+    if ~isempty(costs)
+        return;
+    end
+
+    try
+        best = node.best;
+        [costs, poses] = readCostPos(best);
+        if ~isempty(costs)
+            return;
+        end
+    catch
+    end
+end
+
+
+%% =========================================================
+%  辅助函数3：读取 cost / pos
+% =========================================================
+function [costs, poses] = readCostPos(x)
+
+    costs = [];
+    poses = [];
+
+    if isstruct(x)
+        costNames = {'cost', 'Cost', 'costs', 'Costs', 'obj', 'Obj', 'objs', 'Objs'};
+        posNames  = {'pos', 'Pos', 'position', 'Position', 'x', 'X', 'var', 'Var'};
+
+        for i = 1:length(costNames)
+            if isfield(x, costNames{i})
+                tmp = x.(costNames{i});
+                if isnumeric(tmp)
+                    costs = tmp;
+                    break;
+                end
+            end
+        end
+
+        for i = 1:length(posNames)
+            if isfield(x, posNames{i})
+                tmp = x.(posNames{i});
+                if isnumeric(tmp)
+                    poses = tmp;
+                    break;
+                end
+            end
+        end
+
+        if isempty(costs) && numel(x) > 1
+            try
+                costs = vertcat(x.cost);
+            catch
+            end
+        end
+        if isempty(poses) && numel(x) > 1
+            try
+                poses = vertcat(x.pos);
+            catch
+            end
+        end
+
+        return;
+    end
+
+    if isobject(x)
+        costNames = {'cost', 'Cost', 'costs', 'Costs', 'obj', 'Obj', 'objs', 'Objs'};
+        posNames  = {'pos', 'Pos', 'position', 'Position', 'x', 'X', 'var', 'Var'};
+
+        for i = 1:length(costNames)
+            try
+                tmp = x.(costNames{i});
+                if isnumeric(tmp)
+                    costs = tmp;
+                    break;
+                end
+            catch
+            end
+        end
+
+        for i = 1:length(posNames)
+            try
+                tmp = x.(posNames{i});
+                if isnumeric(tmp)
+                    poses = tmp;
+                    break;
+                end
+            catch
+            end
+        end
+    end
+end
