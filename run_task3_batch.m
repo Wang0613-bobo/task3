@@ -203,6 +203,30 @@ function runSingleOptimization(job, saveFile, populationSize, maxFE, odName, net
     alg = NSGAIIPlus();
     alg.Solve(problem);
 
+    % Fallback: if algorithm-level save hook did not create MAT, persist
+    % final population from alg.result as an emergency bridge.
+    if ~exist(saveFile, 'file')
+        fprintf(2, '[Task3][WARN] Expected final-pop MAT not found after Solve. Trying fallback save from alg.result...\n');
+        try
+            if isempty(alg.result)
+                error('alg.result is empty.');
+            end
+            if size(alg.result,2) >= 2
+                finalPopulation = alg.result{end,2}; %#ok<NASGU>
+            else
+                finalPopulation = alg.result{end}; %#ok<NASGU>
+            end
+            saveDir = fileparts(saveFile);
+            if ~isempty(saveDir) && ~exist(saveDir,'dir')
+                mkdir(saveDir);
+            end
+            save(saveFile, 'finalPopulation');
+            fprintf('[Task3][Fallback] Saved final population to: %s\n', saveFile);
+        catch ME
+            fprintf(2, '[Task3][Fallback] Failed: %s\n', ME.message);
+        end
+    end
+
     fprintf('[Task3] NSGAIIPlus done.\n');
 end
 
@@ -690,3 +714,6 @@ function varargout = callCompat(funcHandle, varargin)
 
     error('run_task3_batch:CallFailed', 'Compatibility call failed. Errors:\n%s', strjoin(errLog, '\n---\n'));
 end
+
+
+
