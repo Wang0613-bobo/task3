@@ -107,4 +107,3 @@ function iSaveFinalPopulation(Population, Problem)
             fprintf(2, '  at %s (line %d)\n', ME.stack(k).name, ME.stack(k).line);
         end
     end
-end
