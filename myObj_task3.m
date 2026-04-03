@@ -12,8 +12,10 @@ classdef myObj_task3 < PROBLEM
             % 3) odName
             % 4) networkFile
             % 5) saveFile (optional)
-            [carbonTax, quantityOfCargo, odName, networkFile, saveFile] = ...
-                obj.ParameterSet(0.40, 1000, 'OD1', fullfile('MyModel','data','wangluojiegou.txt'), '');
+            % 6) demandUncertaintyRate (rho)
+            % 7) confidenceLevel (alpha)
+            [carbonTax, quantityOfCargo, odName, networkFile, saveFile, rho, alpha] = ...
+                obj.ParameterSet(0.40, 1000, 'OD1', fullfile('MyModel','data','wangluojiegou.txt'), '', 0.20, 0.80);
 
             if isempty(networkFile)
                 networkFile = fullfile('MyModel','data','wangluojiegou.txt');
@@ -26,12 +28,11 @@ classdef myObj_task3 < PROBLEM
 
             model.carbonTax = carbonTax;
             model.costOfUnitCarbon = carbonTax;
+
             model.baseDemand = quantityOfCargo;
             model.quantityOfCargo = quantityOfCargo;
-
-            % Make uncertain-demand equivalent equal to exact quantity
-            model.demandUncertaintyRate = 0;
-            model.confidenceLevel = 0.5;
+            model.demandUncertaintyRate = rho;
+            model.confidenceLevel = alpha;
 
             if ~isempty(saveFile)
                 model.task3SaveFile = saveFile;
