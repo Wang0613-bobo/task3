@@ -21,7 +21,7 @@ if isempty(rerankingRows)
 end
 
 T = struct2table(rerankingRows);
-T = sortrows(T, {'axisType','carbonTax','quantityOfCargo'});
+T = sortrows(T, {'solutionType','axisType','carbonTax','quantityOfCargo'});
 
 % Build compact dominance-switch chain table (Switch only)
 sw = strcmp(T.switchType, 'Switch');
@@ -40,6 +40,14 @@ end
 
 chainFile = fullfile(outRoot, 'task3_dominance_switch_chain.xlsx');
 writetable(Tswitch, chainFile);
+
+% Split by representative type
+solTypes = unique(T.solutionType, 'stable');
+for i = 1:numel(solTypes)
+    Ti = T(strcmp(T.solutionType, solTypes{i}), :);
+    si = fullfile(outRoot, sprintf('task3_reranking_%s.xlsx', lower(solTypes{i})));
+    writetable(Ti, si);
+end
 
 matFile = fullfile(outRoot, 'task3_dominance_switch_chain.mat');
 save(matFile, 'T', 'Tswitch');
