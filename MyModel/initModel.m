@@ -22,7 +22,7 @@ function model = initModel(fileName, odName)
     model.baseDemand = [];              % Q0
     model.demandUncertaintyRate = [];   % rho
     model.confidenceLevel = [];         % alpha
-
+    model.demandScenarioWeights = [0.25 0.50 0.25]; % [低需求, 基准需求, 高需求] 默认权重
     % =========================
     % 基础参数
     % =========================
@@ -43,7 +43,7 @@ function model = initModel(fileName, odName)
     model.costOfUnitTransfer = [0 3.5 3 4];
     model.timeOfUnitTransfer = [0 0.01 0.015 0.01];
     model.carbonEmissionsOfUnitTransfer = [0 0.54 0.82 1.02];
-
+    model.transferTimeDemandBase = 1000; % 中转时间按Q/基准需求缩放，避免Q线性放大过强
     model.price = 10000;                 % 元/t
     model.p1 = 8;                        % 元/(h*t)
     model.p2 = 20;                       % 元/(h*t)
@@ -140,9 +140,22 @@ function Qeq = getEquivalentDemand(model)
     alpha = max(0, min(1, model.confidenceLevel));
 
     lowerQ = (1 - rho) * Q0;
+    midQ   = Q0;
     upperQ = (1 + rho) * Q0;
 
-    Qeq = (1 - alpha) * lowerQ + alpha * upperQ;
+        % 通过置信水平对默认三场景权重进行偏置：
+    % alpha越大，越偏向高需求场景；alpha越小，越偏向低需求场景。
+    w = model.demandScenarioWeights;
+    if numel(w) ~= 3 || any(w < 0)
+        w = [0.25 0.50 0.25];
+    end
+    w = w / sum(w);
+    tilt = (alpha - 0.5) * 0.4; % 偏置幅度受控，避免极端畸变
+    w = [w(1) - tilt, w(2), w(3) + tilt];
+    w = max(w, 0);
+    w = w / sum(w);
+
+    Qeq = w(1) * lowerQ + w(2) * midQ + w(3) * upperQ;  
 end
 
 
@@ -327,7 +340,8 @@ function [arriveTime, waitTime] = getArriveTime(distanceArray, typeOfPath, pathT
     for i = 1:length(typeOfPath)
 
         if i > 1
-            transferTime = Q * model.timeOfUnitTransfer(pathTransferType(i - 1));
+            transferScale = Q / max(model.transferTimeDemandBase, eps);
+            transferTime = transferScale * model.timeOfUnitTransfer(pathTransferType(i - 1));
             currentTime = currentTime + transferTime;
         end
 
@@ -468,27 +482,78 @@ end
 % =========================
 function [individualObjs, detail] = getIndividualObjs(individual, model)
 
-    Qeq = getEquivalentDemand(model);
+    assert(~isempty(model.baseDemand), 'baseDemand 未设置，请在外部脚本中赋值。');
+    assert(~isempty(model.demandUncertaintyRate), 'demandUncertaintyRate 未设置，请在外部脚本中赋值。');
+    assert(~isempty(model.confidenceLevel), 'confidenceLevel 未设置，请在外部脚本中赋值。');
 
-    [C_wait, C_trans, C_transfer, C_timeWindow, C_damage, E_total, ...
-        arriveTime, path, typeOfPath, numOfPenalty, distanceOfPath] = ...
-        analyseIndividualUnderQ(individual, model, Qeq);
+        Q0 = model.baseDemand;
+    rho = max(0, model.demandUncertaintyRate);
+    alpha = max(0, min(1, model.confidenceLevel));
+
+    qScen = [(1-rho)*Q0, Q0, (1+rho)*Q0];
+    w = model.demandScenarioWeights;
+    if numel(w) ~= 3 || any(w < 0)
+        w = [0.25 0.50 0.25];
+    end
+    w = w / sum(w);
+    tilt = (alpha - 0.5) * 0.4;
+    w = [w(1) - tilt, w(2), w(3) + tilt];
+    w = max(w, 0);
+    w = w / sum(w);
+
+    c_wait_s = zeros(1,3);
+    c_trans_s = zeros(1,3);
+    c_transfer_s = zeros(1,3);
+    c_timeWindow_s = zeros(1,3);
+    c_damage_s = zeros(1,3);
+    e_total_s = zeros(1,3);
+    penaltyFlag = false;
+    arriveTime = [];
+    path = [];
+    typeOfPath = [];
+    numOfPenalty = 0;
+    distanceOfPath = NaN;
+
+    for s = 1:3
+        [c_wait_s(s), c_trans_s(s), c_transfer_s(s), c_timeWindow_s(s), c_damage_s(s), e_total_s(s), ...
+            arriveTime_s, path_s, typeOfPath_s, numOfPenalty_s, distanceOfPath_s] = ...
+            analyseIndividualUnderQ(individual, model, qScen(s));
+        if s == 2
+            arriveTime = arriveTime_s;
+            path = path_s;
+            typeOfPath = typeOfPath_s;
+            numOfPenalty = numOfPenalty_s;
+            distanceOfPath = distanceOfPath_s;
+        end
+        if numOfPenalty_s > 0 || any(~isfinite([c_wait_s(s), c_trans_s(s), c_transfer_s(s), c_timeWindow_s(s), c_damage_s(s), e_total_s(s)]))
+            penaltyFlag = true;
+        end
+    end
 
     penaltyValue = model.penaltyFactor;
 
     detail = struct();
     detail.path = path;
     detail.typeOfPath = typeOfPath;
-    detail.equivalentDemand = Qeq;
+    detail.equivalentDemand = sum(w .* qScen);
+    detail.scenarioDemand = qScen;
+    detail.scenarioWeight = w;
     detail.baseDemand = model.baseDemand;
     detail.demandUncertaintyRate = model.demandUncertaintyRate;
     detail.confidenceLevel = model.confidenceLevel;
 
-    if numOfPenalty > 0 || any(~isfinite([C_wait, C_trans, C_transfer, C_timeWindow, C_damage, E_total]))
+    if penaltyFlag
         individualObjs = [1 1] * (penaltyValue + abs(distanceOfPath));
         detail.arriveTime = inf;
         return;
     end
+
+    C_wait = sum(w .* c_wait_s);
+    C_trans = sum(w .* c_trans_s);
+    C_transfer = sum(w .* c_transfer_s);
+    C_timeWindow = sum(w .* c_timeWindow_s);
+    C_damage = sum(w .* c_damage_s);
+    E_total = sum(w .* e_total_s);
 
     C_base = C_wait + C_trans + C_transfer + C_timeWindow + C_damage;
     C_tax = model.carbonTax * E_total;
