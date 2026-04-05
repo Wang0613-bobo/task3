@@ -20,6 +20,7 @@ networkFile = fullfile('MyModel','data','wangluojiegou.txt');
 % Task-3 uncertainty (enabled, not collapsed to deterministic by default)
 rho = 0.20;
 alpha = 0.80;
+costClosureTol = 1e-6;
 
 %% =========================
 % 1) Parameter grids
@@ -32,7 +33,7 @@ qDemandList = [800, 1000, 1200, 1400];
 qTax = 1000;
 tauTaxList = [0.00, 0.20, 0.40, 0.60, 0.80, 1.00];
 
-% Four-corner points for dominance check
+% Four-corner points for interaction contrast
 qLow = 800; qHigh = 1400;
 tauLow = 0.10; tauHigh = 0.80;
 fourCorners = [ ...
@@ -72,7 +73,7 @@ for i = 1:numel(jobs)
     fprintf('[Task3] Job %d/%d | axis=%s | tau=%.4f | Q=%.2f\n', i, numel(jobs), job.axisType, job.carbonTax, job.quantityOfCargo);
     fprintf('[Task3] Planned final-pop file: %s\n', saveFile);
 
-    runSingleOptimization(job, saveFile, populationSize, maxFE, odName, networkFile, rho, alpha);
+    runMeta = runSingleOptimization(job, saveFile, populationSize, maxFE, odName, networkFile, rho, alpha);
 
     if ~exist(saveFile, 'file')
         error('[Task3] final population MAT missing: %s', saveFile);
@@ -83,12 +84,12 @@ for i = 1:numel(jobs)
         error('[Task3] file loaded but finalPopulation is missing/empty: %s', saveFile);
     end
 
-    [rep, ndStats] = extractRepresentativeSolutions(S.finalPopulation, job, saveFile, odName, networkFile, rho, alpha);
+    [rep, ndStats] = extractRepresentativeSolutions(S.finalPopulation, job, saveFile, odName, networkFile, rho, alpha, runMeta.finalPopulationSource, costClosureTol);
 
-    repRows = repsToRows(rep, job, rho, alpha);
+    repRows = repsToRows(rep, job, rho, alpha, ndStats);
     allRepRows = [allRepRows; repRows]; %#ok<AGROW>
 
-    summaryRow = buildSummaryRow(rep, job, saveFile, rho, alpha);
+    summaryRow = buildSummaryRow(rep, job, saveFile, rho, alpha, ndStats);
     allSummaryRows = [allSummaryRows; summaryRow]; %#ok<AGROW>
 
     allNDStatsRows = [allNDStatsRows; buildNDStatsRow(ndStats, rep, job, saveFile, rho, alpha)]; %#ok<AGROW>
@@ -192,8 +193,10 @@ function jobs = buildJobs(tauDemand, qDemandList, qTax, tauTaxList, fourCorners,
     end
 end
 
-function runSingleOptimization(job, saveFile, populationSize, maxFE, odName, networkFile, rho, alpha)
+function meta = runSingleOptimization(job, saveFile, populationSize, maxFE, odName, networkFile, rho, alpha)
     fprintf('[Task3] Running NSGAIIPlus...\n');
+    meta = struct();
+    meta.finalPopulationSource = 'algorithm_save_hook';
 
     problem = myObj_task3( ...
         'N', populationSize, ...
@@ -222,6 +225,7 @@ function runSingleOptimization(job, saveFile, populationSize, maxFE, odName, net
             end
             save(saveFile, 'finalPopulation');
             fprintf('[Task3][Fallback] Saved final population to: %s\n', saveFile);
+            meta.finalPopulationSource = 'fallback_alg_result';
         catch ME
             fprintf(2, '[Task3][Fallback] Failed: %s\n', ME.message);
         end
@@ -230,7 +234,7 @@ function runSingleOptimization(job, saveFile, populationSize, maxFE, odName, net
     fprintf('[Task3] NSGAIIPlus done.\n');
 end
 
-function [rep, ndStats] = extractRepresentativeSolutions(finalPopulation, job, saveFile, odName, networkFile, rho, alpha)
+function [rep, ndStats] = extractRepresentativeSolutions(finalPopulation, job, saveFile, odName, networkFile, rho, alpha, finalPopulationSource, costClosureTol)
     popObj = vertcat(finalPopulation.objs);
     popDec = vertcat(finalPopulation.decs);
 
@@ -261,9 +265,9 @@ function [rep, ndStats] = extractRepresentativeSolutions(finalPopulation, job, s
     [~, iTradeND] = min(score);
 
     rep = struct();
-    rep.CostBest   = buildOneRep('CostBest', ndIdx(iCostND), ndDec(iCostND,:), ndObj(iCostND,:), job, odName, networkFile, rho, alpha);
-    rep.CarbonBest = buildOneRep('CarbonBest', ndIdx(iCarbonND), ndDec(iCarbonND,:), ndObj(iCarbonND,:), job, odName, networkFile, rho, alpha);
-    rep.Tradeoff   = buildOneRep('Tradeoff', ndIdx(iTradeND), ndDec(iTradeND,:), ndObj(iTradeND,:), job, odName, networkFile, rho, alpha);
+    rep.CostBest   = buildOneRep('CostBest', ndIdx(iCostND), ndDec(iCostND,:), ndObj(iCostND,:), job, odName, networkFile, rho, alpha, costClosureTol);
+    rep.CarbonBest = buildOneRep('CarbonBest', ndIdx(iCarbonND), ndDec(iCarbonND,:), ndObj(iCarbonND,:), job, odName, networkFile, rho, alpha, costClosureTol);
+    rep.Tradeoff   = buildOneRep('Tradeoff', ndIdx(iTradeND), ndDec(iTradeND,:), ndObj(iTradeND,:), job, odName, networkFile, rho, alpha, costClosureTol);
 
     [~, iCostMaxND] = max(ndObj(:,1));
     [~, iCarbonMaxND] = max(ndObj(:,2));
@@ -271,13 +275,25 @@ function [rep, ndStats] = extractRepresentativeSolutions(finalPopulation, job, s
     sigCarbonMax = getSignatureFromDec(ndDec(iCarbonMaxND,:), job, odName, networkFile, rho, alpha);
 
     ndStats = struct();
+    ndStats.finalPopulationSource = finalPopulationSource;
+    ndStats.rawPopSize = size(popObj,1);
+    ndStats.uniqueObjCount = size(unique(popObj, 'rows'), 1);
     ndStats.nND = size(ndObj,1);
+    ndStats.uniqueNDCount = size(unique(ndObj, 'rows'), 1);
+    ndStats.ndRatio = ndStats.nND / max(ndStats.rawPopSize, 1);
+    ndStats.isAllPopulationNearlyND = (ndStats.nND == ndStats.rawPopSize);
+    ndStats.ndSemanticNote = '';
+    if ndStats.nND == ndStats.rawPopSize
+        ndStats.ndSemanticNote = 'nND may reflect output semantics rather than frontier richness';
+        fprintf(2, '[Task3][WARN] %s | nND=%d equals rawPopSize=%d. nND may reflect output semantics rather than frontier richness.\n', ...
+            job.pointName, ndStats.nND, ndStats.rawPopSize);
+    end
     ndStats.costRange = max(ndObj(:,1)) - min(ndObj(:,1));
     ndStats.carbonRange = max(ndObj(:,2)) - min(ndObj(:,2));
     ndStats.extremeSignatureSet = strjoin(unique({rep.CostBest.signature, rep.CarbonBest.signature, sigCostMax, sigCarbonMax}, 'stable'), ';');
 end
 
-function out = buildOneRep(name, idx, dec, obj, job, odName, networkFile, rho, alpha)
+function out = buildOneRep(name, idx, dec, obj, job, odName, networkFile, rho, alpha, costClosureTol)
     model = initModel(networkFile, odName);
     model.carbonTax = job.carbonTax;
     model.costOfUnitCarbon = job.carbonTax;
@@ -326,6 +342,17 @@ function out = buildOneRep(name, idx, dec, obj, job, odName, networkFile, rho, a
     out.C_damage = getFieldOrNaN(detail, 'C_damage');
     out.C_tax = getFieldOrNaN(detail, 'C_tax');
 
+    % 中文说明：该闭合性核查用于验证“结果导出口径是否与主模型目标口径一致”。
+    % 若不闭合，应优先怀疑结果版本或导出链路，而非直接修改模型公式。
+    out.costClosureSum = out.C_wait + out.C_trans + out.C_transfer + out.C_timeWindow + out.C_damage + out.C_tax;
+    out.costClosureGap = out.costClosureSum - out.totalCost;
+    out.isCostClosed = abs(out.costClosureGap) <= costClosureTol;
+    if ~out.isCostClosed
+        fprintf(2, ['[Task3][WARN] Cost closure mismatch (%s @ %s): gap=%.6e, sum=%.6f, totalCost=%.6f. ' ...
+            'Please verify result version/export chain first.\n'], ...
+            name, job.pointName, out.costClosureGap, out.costClosureSum, out.totalCost);
+    end
+
     out.signature = [out.pathStr, '|', out.modeStr];
 end
 
@@ -339,7 +366,7 @@ function sig = getSignatureFromDec(dec, job, odName, networkFile, rho, alpha)
     sig = [joinNum(path, '-', '%d'), '|', modeString(typeOfPath)];
 end
 
-function rows = repsToRows(rep, job, rho, alpha)
+function rows = repsToRows(rep, job, rho, alpha, ndStats)
     names = {'CostBest','CarbonBest','Tradeoff'};
     rows = repmat(struct(), 3, 1);
     for k = 1:3
@@ -374,8 +401,19 @@ function rows = repsToRows(rep, job, rho, alpha)
         rows(k).C_timeWindow = s.C_timeWindow;
         rows(k).C_damage = s.C_damage;
         rows(k).C_tax = s.C_tax;
+        rows(k).costClosureSum = s.costClosureSum;
+        rows(k).costClosureGap = s.costClosureGap;
+        rows(k).isCostClosed = s.isCostClosed;
 
         rows(k).hasInvalidEdge = s.hasInvalidEdge;
+        rows(k).finalPopulationSource = ndStats.finalPopulationSource;
+        rows(k).rawPopSize = ndStats.rawPopSize;
+        rows(k).uniqueObjCount = ndStats.uniqueObjCount;
+        rows(k).nND = ndStats.nND;
+        rows(k).uniqueNDCount = ndStats.uniqueNDCount;
+        rows(k).ndRatio = ndStats.ndRatio;
+        rows(k).isAllPopulationNearlyND = ndStats.isAllPopulationNearlyND;
+        rows(k).ndSemanticNote = ndStats.ndSemanticNote;
     end
 end
 
@@ -389,13 +427,20 @@ function row = buildNDStatsRow(ndStats, rep, job, saveFile, rho, alpha)
     row.alpha = alpha;
     row.Qeq = rep.Tradeoff.Qeq;
     row.finalPopFile = saveFile;
+    row.finalPopulationSource = ndStats.finalPopulationSource;
+    row.rawPopSize = ndStats.rawPopSize;
+    row.uniqueObjCount = ndStats.uniqueObjCount;
     row.nND = ndStats.nND;
+    row.uniqueNDCount = ndStats.uniqueNDCount;
+    row.ndRatio = ndStats.ndRatio;
+    row.isAllPopulationNearlyND = ndStats.isAllPopulationNearlyND;
+    row.ndSemanticNote = ndStats.ndSemanticNote;
     row.costRange = ndStats.costRange;
     row.carbonRange = ndStats.carbonRange;
     row.extremeSignatureSet = ndStats.extremeSignatureSet;
 end
 
-function row = buildSummaryRow(rep, job, saveFile, rho, alpha)
+function row = buildSummaryRow(rep, job, saveFile, rho, alpha, ndStats)
     row = struct();
     row.axisType = job.axisType;
     row.pointName = job.pointName;
@@ -405,24 +450,46 @@ function row = buildSummaryRow(rep, job, saveFile, rho, alpha)
     row.alpha = alpha;
     row.Qeq = rep.Tradeoff.Qeq;
     row.finalPopFile = saveFile;
+    row.finalPopulationSource = ndStats.finalPopulationSource;
+    row.rawPopSize = ndStats.rawPopSize;
+    row.uniqueObjCount = ndStats.uniqueObjCount;
+    row.nND = ndStats.nND;
+    row.uniqueNDCount = ndStats.uniqueNDCount;
+    row.ndRatio = ndStats.ndRatio;
+    row.isAllPopulationNearlyND = ndStats.isAllPopulationNearlyND;
+    row.ndSemanticNote = ndStats.ndSemanticNote;
 
     row.CostBest_signature = rep.CostBest.signature;
     row.CostBest_totalCost = rep.CostBest.totalCost;
     row.CostBest_totalEmission = rep.CostBest.totalEmission;
     row.CostBest_arriveTime = rep.CostBest.arriveTime;
     row.CostBest_lowCarbonModeRatio = rep.CostBest.lowCarbonModeRatio;
+    row.CostBest_costClosureSum = rep.CostBest.costClosureSum;
+    row.CostBest_costClosureGap = rep.CostBest.costClosureGap;
+    row.CostBest_isCostClosed = rep.CostBest.isCostClosed;
 
     row.CarbonBest_signature = rep.CarbonBest.signature;
     row.CarbonBest_totalCost = rep.CarbonBest.totalCost;
     row.CarbonBest_totalEmission = rep.CarbonBest.totalEmission;
     row.CarbonBest_arriveTime = rep.CarbonBest.arriveTime;
     row.CarbonBest_lowCarbonModeRatio = rep.CarbonBest.lowCarbonModeRatio;
+    row.CarbonBest_costClosureSum = rep.CarbonBest.costClosureSum;
+    row.CarbonBest_costClosureGap = rep.CarbonBest.costClosureGap;
+    row.CarbonBest_isCostClosed = rep.CarbonBest.isCostClosed;
 
     row.Tradeoff_signature = rep.Tradeoff.signature;
     row.Tradeoff_totalCost = rep.Tradeoff.totalCost;
     row.Tradeoff_totalEmission = rep.Tradeoff.totalEmission;
     row.Tradeoff_arriveTime = rep.Tradeoff.arriveTime;
     row.Tradeoff_lowCarbonModeRatio = rep.Tradeoff.lowCarbonModeRatio;
+    row.Tradeoff_costClosureSum = rep.Tradeoff.costClosureSum;
+    row.Tradeoff_costClosureGap = rep.Tradeoff.costClosureGap;
+    row.Tradeoff_isCostClosed = rep.Tradeoff.isCostClosed;
+
+    % 与代表解明细表保持同名字段，默认给 Tradeoff 代表解（用于点级摘要直读）
+    row.costClosureSum = rep.Tradeoff.costClosureSum;
+    row.costClosureGap = rep.Tradeoff.costClosureGap;
+    row.isCostClosed = rep.Tradeoff.isCostClosed;
 end
 
 function rows = buildRerankingRows(allRepRows, solutionType)
@@ -712,6 +779,8 @@ function varargout = callCompat(funcHandle, varargin)
         end
     end
 
+    error('run_task3_batch:CallFailed', 'Compatibility call failed. Errors:\n%s', strjoin(errLog, '\n---\n'));
+end
     error('run_task3_batch:CallFailed', 'Compatibility call failed. Errors:\n%s', strjoin(errLog, '\n---\n'));
 end
 
