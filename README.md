@@ -30,6 +30,8 @@
   - 任务二：固定需求，扫描 `carbonTax`，识别低碳替代。
 - `run_task3_batch.m`
   - 任务三：支持单点调试 + 批处理；依赖“算法结束落盘最终种群”，再从 `.mat` 读取做后处理导出。
+- `run_task3_reranking_analysis.m`
+  - 任务三：对 `run_task3_batch` 输出的 `rerankingRows` 做重排链导出，生成主导方案切换表。
 
 ### 4) 任务三专用问题类
 - `Problems/Multi-objective optimization/BT/myObj_task3.m`
@@ -59,6 +61,8 @@
 - `task3_plot_data.mat`：后续绘图的聚合数据。
 - `task3_representative_table.xlsx`：代表性解明细（CostBest/CarbonBest/Tradeoff）。
 - `task3_summary_table.xlsx`：参数点级汇总。
+- `task3_reranking_table.xlsx`：按轴分组的重排明细（含 Keep/Switch、主导驱动项）。
+- `task3_dominance_switch_chain.xlsx`：仅包含 Switch 事件的主导方案替代表。
 
 ## 备注
 

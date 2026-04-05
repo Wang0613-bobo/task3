@@ -232,12 +232,13 @@ function out = buildOneRep(name, idx, dec, obj, job, odName, networkFile, rho, a
     model.quantityOfCargo = job.quantityOfCargo;
     model.demandUncertaintyRate = rho;
     model.confidenceLevel = alpha;
+    Qeq = model.getEquivalentDemand(model);
 
     [path, typeOfPath] = callCompat(model.analyseIndividual, dec, model);
     pathTransferType = callCompat(model.getPathTransferType, typeOfPath, model);
 
     [distanceOfPath, distanceArray, hasInvalidEdge] = getDistanceCompat(path, typeOfPath, model);
-    [arriveTime, ~] = callCompat(model.getArriveTime, distanceArray, typeOfPath, pathTransferType, model, model.getEquivalentDemand(model));
+    [arriveTime, ~] = callCompat(model.getArriveTime, distanceArray, typeOfPath, pathTransferType, model, Qeq);
 
     [~, detail] = callCompat(model.getIndividualObjs, dec, model);
 
@@ -260,6 +261,7 @@ function out = buildOneRep(name, idx, dec, obj, job, odName, networkFile, rho, a
 
     out.pathDistance = distanceOfPath;
     out.hasInvalidEdge = hasInvalidEdge;
+    out.Qeq = Qeq;
 
     % Evidence-chain fields from detail
     out.C_wait = getFieldOrNaN(detail, 'C_wait');
@@ -283,6 +285,7 @@ function rows = repsToRows(rep, job, rho, alpha)
         rows(k).quantityOfCargo = job.quantityOfCargo;
         rows(k).rho = rho;
         rows(k).alpha = alpha;
+        rows(k).Qeq = s.Qeq;
 
         rows(k).solutionType = s.solutionType;
         rows(k).populationIndex = s.populationIndex;
@@ -317,6 +320,7 @@ function row = buildSummaryRow(rep, job, saveFile, rho, alpha)
     row.quantityOfCargo = job.quantityOfCargo;
     row.rho = rho;
     row.alpha = alpha;
+    row.Qeq = rep.Tradeoff.Qeq;
     row.finalPopFile = saveFile;
 
     row.CostBest_signature = rep.CostBest.signature;
@@ -344,9 +348,16 @@ function row = buildTradeoffRow(tradeoff, job)
     row.pointName = job.pointName;
     row.carbonTax = job.carbonTax;
     row.quantityOfCargo = job.quantityOfCargo;
+    row.Qeq = tradeoff.Qeq;
     row.signature = tradeoff.signature;
     row.totalCost = tradeoff.totalCost;
     row.totalEmission = tradeoff.totalEmission;
+    row.C_wait = tradeoff.C_wait;
+    row.C_trans = tradeoff.C_trans;
+    row.C_transfer = tradeoff.C_transfer;
+    row.C_timeWindow = tradeoff.C_timeWindow;
+    row.C_damage = tradeoff.C_damage;
+    row.C_tax = tradeoff.C_tax;
 end
 
 function rows = buildRerankingRows(tradeoffRows)
@@ -356,37 +367,78 @@ function rows = buildRerankingRows(tradeoffRows)
     end
 
     T = struct2table(tradeoffRows);
-    [~, idx] = sortrows([T.carbonTax, T.quantityOfCargo], [1, 2]);
-    T = T(idx,:);
+    axisList = unique(T.axisType, 'stable');
 
-    rows = repmat(struct(), height(T), 1);
-    prevSig = '';
-    for i = 1:height(T)
-        rows(i).axisType = T.axisType{i};
-        rows(i).pointName = T.pointName{i};
-        rows(i).carbonTax = T.carbonTax(i);
-        rows(i).quantityOfCargo = T.quantityOfCargo(i);
-        rows(i).signature = T.signature{i};
-        rows(i).totalCost = T.totalCost(i);
-        rows(i).totalEmission = T.totalEmission(i);
+    rowCell = {};
+    for a = 1:numel(axisList)
+        axisName = axisList{a};
+        A = T(strcmp(T.axisType, axisName), :);
+        A = sortAxisRows(A, axisName);
 
-        if i == 1
-            rows(i).switchType = 'Initial';
-            rows(i).fromSignature = '';
-            rows(i).toSignature = T.signature{i};
-        else
-            if strcmp(prevSig, T.signature{i})
-                rows(i).switchType = 'Keep';
-                rows(i).fromSignature = prevSig;
-                rows(i).toSignature = T.signature{i};
+        prevSig = '';
+        prevComp = [];
+        for i = 1:height(A)
+            r = struct();
+            r.axisType = A.axisType{i};
+            r.pointName = A.pointName{i};
+            r.carbonTax = A.carbonTax(i);
+            r.quantityOfCargo = A.quantityOfCargo(i);
+            r.Qeq = A.Qeq(i);
+            r.signature = A.signature{i};
+            r.totalCost = A.totalCost(i);
+            r.totalEmission = A.totalEmission(i);
+
+            if i == 1
+                r.switchType = 'Initial';
+                r.fromSignature = '';
+                r.toSignature = A.signature{i};
+                r.deltaCost = NaN;
+                r.deltaEmission = NaN;
+                r.mainDriver = '';
+                r.deltaMainDriver = NaN;
             else
-                rows(i).switchType = 'Switch';
-                rows(i).fromSignature = prevSig;
-                rows(i).toSignature = T.signature{i};
+                r.fromSignature = prevSig;
+                r.toSignature = A.signature{i};
+                r.deltaCost = A.totalCost(i) - A.totalCost(i-1);
+                r.deltaEmission = A.totalEmission(i) - A.totalEmission(i-1);
+
+                if strcmp(prevSig, A.signature{i})
+                    r.switchType = 'Keep';
+                else
+                    r.switchType = 'Switch';
+                end
+
+                compNow = [A.C_wait(i), A.C_trans(i), A.C_transfer(i), A.C_timeWindow(i), A.C_damage(i), A.C_tax(i)];
+                compPrev = prevComp;
+                dComp = compNow - compPrev;
+                compNames = {'C_wait','C_trans','C_transfer','C_timeWindow','C_damage','C_tax'};
+                [~, iMain] = max(abs(dComp));
+                r.mainDriver = compNames{iMain};
+                r.deltaMainDriver = dComp(iMain);
             end
+
+            prevSig = A.signature{i};
+            prevComp = [A.C_wait(i), A.C_trans(i), A.C_transfer(i), A.C_timeWindow(i), A.C_damage(i), A.C_tax(i)];
+            rowCell{end+1,1} = r; %#ok<AGROW>
         end
-        prevSig = T.signature{i};
     end
+
+    rows = vertcat(rowCell{:});
+end
+
+function A = sortAxisRows(A, axisName)
+    switch lower(axisName)
+        case 'demand'
+            [~, idx] = sort(A.quantityOfCargo, 'ascend');
+        case 'tax'
+            [~, idx] = sort(A.carbonTax, 'ascend');
+        case 'fourcorner'
+            key = (A.quantityOfCargo - min(A.quantityOfCargo)) .* 1000 + A.carbonTax;
+            [~, idx] = sort(key, 'ascend');
+        otherwise
+            [~, idx] = sortrows([A.carbonTax, A.quantityOfCargo], [1,2]);
+    end
+    A = A(idx,:);
 end
 
 function [distanceOfPath, distanceArray, hasInvalidEdge] = getDistanceCompat(path, typeOfPath, model)
