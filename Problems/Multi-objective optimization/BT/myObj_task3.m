@@ -13,10 +13,18 @@ classdef myObj_task3 < PROBLEM
             % 4) networkFile
             % 5) saveFile (optional)
             % 6) demandUncertaintyRate (rho)
-            % 7) confidenceLevel (alpha, CVaR level)
-            % 8) scenarioConfig (optional struct)
+            % 7) confidenceLevel (alpha)
+            % 8) scenarioConfig (optional)
             [carbonTax, quantityOfCargo, odName, networkFile, saveFile, rho, alpha, scenarioConfig] = ...
-                obj.ParameterSet(0.40, 1000, 'OD1', fullfile('MyModel','data','wangluojiegou.txt'), '', 0.20, 0.80, []);
+                obj.ParameterSet( ...
+                    0.40, ...
+                    1000, ...
+                    'OD1', ...
+                    fullfile('MyModel','data','wangluojiegou.txt'), ...
+                    '', ...
+                    0.20, ...
+                    0.80, ...
+                    struct());
 
             if isempty(networkFile)
                 networkFile = fullfile('MyModel','data','wangluojiegou.txt');
@@ -35,16 +43,10 @@ classdef myObj_task3 < PROBLEM
             model.demandUncertaintyRate = rho;
             model.confidenceLevel = alpha;
 
-            if isstruct(scenarioConfig) && ~isempty(scenarioConfig)
-                cfgFields = {'numDemandScenarios', 'demandDistribution', 'demandScenarioValues', ...
-                    'demandScenarioProb', 'useCVaRAggregation', 'riskBlend'};
-                for i = 1:numel(cfgFields)
-                    f = cfgFields{i};
-                    if isfield(scenarioConfig, f)
-                        model.(f) = scenarioConfig.(f);
-                    end
-                end
-            end
+            % 关键修复：
+            % 将 scenarioConfig 写回模型，
+            % 保证求解阶段与后处理阶段使用同一套需求场景配置
+            model = applyScenarioConfig(model, scenarioConfig);
 
             if ~isempty(saveFile)
                 model.task3SaveFile = saveFile;
@@ -66,6 +68,28 @@ classdef myObj_task3 < PROBLEM
                 [f,~] = iCallWithModel(model.getIndividualObjs, individual, model);
                 PopObj(i,:) = f;
             end
+        end
+    end
+end
+
+function model = applyScenarioConfig(model, scenarioConfig)
+
+    if isempty(scenarioConfig) || ~isstruct(scenarioConfig)
+        return;
+    end
+
+    fieldNames = { ...
+        'numDemandScenarios', ...
+        'demandDistribution', ...
+        'demandScenarioValues', ...
+        'demandScenarioProb', ...
+        'useCVaRAggregation', ...
+        'riskBlend'};
+
+    for i = 1:numel(fieldNames)
+        f = fieldNames{i};
+        if isfield(scenarioConfig, f)
+            model.(f) = scenarioConfig.(f);
         end
     end
 end
@@ -101,5 +125,7 @@ function varargout = iCallWithModel(funcHandle, varargin)
         end
     end
 
-    error('myObj_task3:CallFailed', 'Function handle call failed. Tried signatures with errors:\n%s', strjoin(errLog, '\n---\n'));
+    error('myObj_task3:CallFailed', ...
+        'Function handle call failed. Tried signatures with errors:\n%s', ...
+        strjoin(errLog, '\n---\n'));
 end
