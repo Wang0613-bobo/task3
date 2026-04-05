@@ -63,6 +63,8 @@
 - `task3_summary_table.xlsx`：参数点级汇总。
 - `task3_reranking_table.xlsx`：按轴分组的重排明细（含 Keep/Switch、主导驱动项）。
 - `task3_dominance_switch_chain.xlsx`：仅包含 Switch 事件的主导方案替代表。
+- `task3_nd_summary_table.xlsx`：每个参数点的非支配前沿结构摘要（`nND`、`costRange`、`carbonRange`、极端签名集）。
+- `task3_fourcorner_compare_table.xlsx`：四角点二维对照表（LL/HL/LH/HH）。
 
 ## 备注
 

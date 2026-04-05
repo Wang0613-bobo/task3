@@ -60,7 +60,7 @@ end
 % =========================
 allRepRows = struct([]);
 allSummaryRows = struct([]);
-allTradeoffRows = struct([]);
+allNDStatsRows = struct([]);
 
 fprintf('\n[Task3] Total jobs = %d\n', numel(jobs));
 
@@ -83,7 +83,7 @@ for i = 1:numel(jobs)
         error('[Task3] file loaded but finalPopulation is missing/empty: %s', saveFile);
     end
 
-    rep = extractRepresentativeSolutions(S.finalPopulation, job, saveFile, odName, networkFile, rho, alpha);
+    [rep, ndStats] = extractRepresentativeSolutions(S.finalPopulation, job, saveFile, odName, networkFile, rho, alpha);
 
     repRows = repsToRows(rep, job, rho, alpha);
     allRepRows = [allRepRows; repRows]; %#ok<AGROW>
@@ -91,7 +91,7 @@ for i = 1:numel(jobs)
     summaryRow = buildSummaryRow(rep, job, saveFile, rho, alpha);
     allSummaryRows = [allSummaryRows; summaryRow]; %#ok<AGROW>
 
-    allTradeoffRows = [allTradeoffRows; buildTradeoffRow(rep.Tradeoff, job)]; %#ok<AGROW>
+    allNDStatsRows = [allNDStatsRows; buildNDStatsRow(ndStats, rep, job, saveFile, rho, alpha)]; %#ok<AGROW>
 
     fprintf('[Task3] Representative extraction done (nondominated set): CostBest / CarbonBest / Tradeoff\n');
 end
@@ -99,7 +99,11 @@ end
 %% =========================
 % 3) Reranking analysis (signature-based)
 % =========================
-rerankingRows = buildRerankingRows(allTradeoffRows);
+reranking_tradeoff = buildRerankingRows(allRepRows, 'Tradeoff');
+reranking_costbest = buildRerankingRows(allRepRows, 'CostBest');
+reranking_carbonbest = buildRerankingRows(allRepRows, 'CarbonBest');
+rerankingRows = [reranking_tradeoff; reranking_costbest; reranking_carbonbest];
+fourcornerComparison = buildFourCornerComparison(allRepRows);
 
 %% =========================
 % 4) Export MAT/XLSX
@@ -111,8 +115,12 @@ plotData.rho = rho;
 plotData.alpha = alpha;
 plotData.representativeRows = allRepRows;
 plotData.summaryRows = allSummaryRows;
-plotData.tradeoffRows = allTradeoffRows;
+plotData.ndStatsRows = allNDStatsRows;
 plotData.rerankingRows = rerankingRows;
+plotData.reranking_tradeoff = reranking_tradeoff;
+plotData.reranking_costbest = reranking_costbest;
+plotData.reranking_carbonbest = reranking_carbonbest;
+plotData.fourcornerComparison = fourcornerComparison;
 plotData.demandAxis = allSummaryRows(strcmp({allSummaryRows.axisType}, 'demand'));
 plotData.taxAxis = allSummaryRows(strcmp({allSummaryRows.axisType}, 'tax'));
 plotData.fourCornerAxis = allSummaryRows(strcmp({allSummaryRows.axisType}, 'fourcorner'));
@@ -132,10 +140,20 @@ summaryXlsx = fullfile(outRoot, 'task3_summary_table.xlsx');
 writetable(summaryTable, summaryXlsx);
 fprintf('[Task3] Saved: %s\n', summaryXlsx);
 
+ndTable = struct2table(allNDStatsRows);
+ndXlsx = fullfile(outRoot, 'task3_nd_summary_table.xlsx');
+writetable(ndTable, ndXlsx);
+fprintf('[Task3] Saved: %s\n', ndXlsx);
+
 rerankTable = struct2table(rerankingRows);
 rerankXlsx = fullfile(outRoot, 'task3_reranking_table.xlsx');
 writetable(rerankTable, rerankXlsx);
 fprintf('[Task3] Saved: %s\n', rerankXlsx);
+
+cornerTable = struct2table(fourcornerComparison);
+cornerXlsx = fullfile(outRoot, 'task3_fourcorner_compare_table.xlsx');
+writetable(cornerTable, cornerXlsx);
+fprintf('[Task3] Saved: %s\n', cornerXlsx);
 
 fprintf('\n[Task3] All done.\n');
 
@@ -188,7 +206,7 @@ function runSingleOptimization(job, saveFile, populationSize, maxFE, odName, net
     fprintf('[Task3] NSGAIIPlus done.\n');
 end
 
-function rep = extractRepresentativeSolutions(finalPopulation, job, saveFile, odName, networkFile, rho, alpha)
+function [rep, ndStats] = extractRepresentativeSolutions(finalPopulation, job, saveFile, odName, networkFile, rho, alpha)
     popObj = vertcat(finalPopulation.objs);
     popDec = vertcat(finalPopulation.decs);
 
@@ -222,6 +240,17 @@ function rep = extractRepresentativeSolutions(finalPopulation, job, saveFile, od
     rep.CostBest   = buildOneRep('CostBest', ndIdx(iCostND), ndDec(iCostND,:), ndObj(iCostND,:), job, odName, networkFile, rho, alpha);
     rep.CarbonBest = buildOneRep('CarbonBest', ndIdx(iCarbonND), ndDec(iCarbonND,:), ndObj(iCarbonND,:), job, odName, networkFile, rho, alpha);
     rep.Tradeoff   = buildOneRep('Tradeoff', ndIdx(iTradeND), ndDec(iTradeND,:), ndObj(iTradeND,:), job, odName, networkFile, rho, alpha);
+
+    [~, iCostMaxND] = max(ndObj(:,1));
+    [~, iCarbonMaxND] = max(ndObj(:,2));
+    sigCostMax = getSignatureFromDec(ndDec(iCostMaxND,:), job, odName, networkFile, rho, alpha);
+    sigCarbonMax = getSignatureFromDec(ndDec(iCarbonMaxND,:), job, odName, networkFile, rho, alpha);
+
+    ndStats = struct();
+    ndStats.nND = size(ndObj,1);
+    ndStats.costRange = max(ndObj(:,1)) - min(ndObj(:,1));
+    ndStats.carbonRange = max(ndObj(:,2)) - min(ndObj(:,2));
+    ndStats.extremeSignatureSet = strjoin(unique({rep.CostBest.signature, rep.CarbonBest.signature, sigCostMax, sigCarbonMax}, 'stable'), ';');
 end
 
 function out = buildOneRep(name, idx, dec, obj, job, odName, networkFile, rho, alpha)
@@ -258,6 +287,8 @@ function out = buildOneRep(name, idx, dec, obj, job, odName, networkFile, rho, a
     out.pathStr = joinNum(path, '-', '%d');
     out.modeStr = modeString(typeOfPath);
     out.transferStr = joinNum(pathTransferType, '-', '%d');
+    out.pathSignature = out.pathStr;
+    out.modeSignature = out.modeStr;
 
     out.pathDistance = distanceOfPath;
     out.hasInvalidEdge = hasInvalidEdge;
@@ -272,6 +303,16 @@ function out = buildOneRep(name, idx, dec, obj, job, odName, networkFile, rho, a
     out.C_tax = getFieldOrNaN(detail, 'C_tax');
 
     out.signature = [out.pathStr, '|', out.modeStr];
+end
+
+function sig = getSignatureFromDec(dec, job, odName, networkFile, rho, alpha)
+    model = initModel(networkFile, odName);
+    model.carbonTax = job.carbonTax;
+    model.baseDemand = job.quantityOfCargo;
+    model.demandUncertaintyRate = rho;
+    model.confidenceLevel = alpha;
+    [path, typeOfPath] = callCompat(model.analyseIndividual, dec, model);
+    sig = [joinNum(path, '-', '%d'), '|', modeString(typeOfPath)];
 end
 
 function rows = repsToRows(rep, job, rho, alpha)
@@ -299,6 +340,8 @@ function rows = repsToRows(rep, job, rho, alpha)
         rows(k).lowCarbonModeRatio = s.lowCarbonModeRatio;
         rows(k).pathStr = s.pathStr;
         rows(k).modeStr = s.modeStr;
+        rows(k).pathSignature = s.pathSignature;
+        rows(k).modeSignature = s.modeSignature;
         rows(k).transferStr = s.transferStr;
 
         rows(k).C_wait = s.C_wait;
@@ -310,6 +353,22 @@ function rows = repsToRows(rep, job, rho, alpha)
 
         rows(k).hasInvalidEdge = s.hasInvalidEdge;
     end
+end
+
+function row = buildNDStatsRow(ndStats, rep, job, saveFile, rho, alpha)
+    row = struct();
+    row.axisType = job.axisType;
+    row.pointName = job.pointName;
+    row.carbonTax = job.carbonTax;
+    row.quantityOfCargo = job.quantityOfCargo;
+    row.rho = rho;
+    row.alpha = alpha;
+    row.Qeq = rep.Tradeoff.Qeq;
+    row.finalPopFile = saveFile;
+    row.nND = ndStats.nND;
+    row.costRange = ndStats.costRange;
+    row.carbonRange = ndStats.carbonRange;
+    row.extremeSignatureSet = ndStats.extremeSignatureSet;
 end
 
 function row = buildSummaryRow(rep, job, saveFile, rho, alpha)
@@ -342,31 +401,18 @@ function row = buildSummaryRow(rep, job, saveFile, rho, alpha)
     row.Tradeoff_lowCarbonModeRatio = rep.Tradeoff.lowCarbonModeRatio;
 end
 
-function row = buildTradeoffRow(tradeoff, job)
-    row = struct();
-    row.axisType = job.axisType;
-    row.pointName = job.pointName;
-    row.carbonTax = job.carbonTax;
-    row.quantityOfCargo = job.quantityOfCargo;
-    row.Qeq = tradeoff.Qeq;
-    row.signature = tradeoff.signature;
-    row.totalCost = tradeoff.totalCost;
-    row.totalEmission = tradeoff.totalEmission;
-    row.C_wait = tradeoff.C_wait;
-    row.C_trans = tradeoff.C_trans;
-    row.C_transfer = tradeoff.C_transfer;
-    row.C_timeWindow = tradeoff.C_timeWindow;
-    row.C_damage = tradeoff.C_damage;
-    row.C_tax = tradeoff.C_tax;
-end
-
-function rows = buildRerankingRows(tradeoffRows)
-    if isempty(tradeoffRows)
+function rows = buildRerankingRows(allRepRows, solutionType)
+    if isempty(allRepRows)
         rows = struct([]);
         return;
     end
 
-    T = struct2table(tradeoffRows);
+    T = struct2table(allRepRows);
+    T = T(strcmp(T.solutionType, solutionType), :);
+    if isempty(T)
+        rows = struct([]);
+        return;
+    end
     axisList = unique(T.axisType, 'stable');
 
     rowCell = {};
@@ -385,17 +431,28 @@ function rows = buildRerankingRows(tradeoffRows)
             r.quantityOfCargo = A.quantityOfCargo(i);
             r.Qeq = A.Qeq(i);
             r.signature = A.signature{i};
+            r.pathSignature = A.pathSignature{i};
+            r.modeSignature = A.modeSignature{i};
             r.totalCost = A.totalCost(i);
             r.totalEmission = A.totalEmission(i);
+            r.solutionType = solutionType;
 
             if i == 1
                 r.switchType = 'Initial';
                 r.fromSignature = '';
                 r.toSignature = A.signature{i};
+                r.pathSwitchType = 'Initial';
+                r.modeSwitchType = 'Initial';
                 r.deltaCost = NaN;
                 r.deltaEmission = NaN;
                 r.mainDriver = '';
                 r.deltaMainDriver = NaN;
+                r.delta_C_wait = NaN;
+                r.delta_C_trans = NaN;
+                r.delta_C_transfer = NaN;
+                r.delta_C_timeWindow = NaN;
+                r.delta_C_damage = NaN;
+                r.delta_C_tax = NaN;
             else
                 r.fromSignature = prevSig;
                 r.toSignature = A.signature{i};
@@ -407,6 +464,16 @@ function rows = buildRerankingRows(tradeoffRows)
                 else
                     r.switchType = 'Switch';
                 end
+                if strcmp(A.pathSignature{i-1}, A.pathSignature{i})
+                    r.pathSwitchType = 'KeepPath';
+                else
+                    r.pathSwitchType = 'SwitchPath';
+                end
+                if strcmp(A.modeSignature{i-1}, A.modeSignature{i})
+                    r.modeSwitchType = 'KeepMode';
+                else
+                    r.modeSwitchType = 'SwitchMode';
+                end
 
                 compNow = [A.C_wait(i), A.C_trans(i), A.C_transfer(i), A.C_timeWindow(i), A.C_damage(i), A.C_tax(i)];
                 compPrev = prevComp;
@@ -415,6 +482,12 @@ function rows = buildRerankingRows(tradeoffRows)
                 [~, iMain] = max(abs(dComp));
                 r.mainDriver = compNames{iMain};
                 r.deltaMainDriver = dComp(iMain);
+                r.delta_C_wait = dComp(1);
+                r.delta_C_trans = dComp(2);
+                r.delta_C_transfer = dComp(3);
+                r.delta_C_timeWindow = dComp(4);
+                r.delta_C_damage = dComp(5);
+                r.delta_C_tax = dComp(6);
             end
 
             prevSig = A.signature{i};
@@ -439,6 +512,97 @@ function A = sortAxisRows(A, axisName)
             [~, idx] = sortrows([A.carbonTax, A.quantityOfCargo], [1,2]);
     end
     A = A(idx,:);
+end
+
+function rows = buildFourCornerComparison(allRepRows)
+    rows = struct([]);
+    if isempty(allRepRows)
+        return;
+    end
+    T = struct2table(allRepRows);
+    T = T(strcmp(T.axisType, 'fourcorner'), :);
+    if isempty(T)
+        return;
+    end
+
+    qLow = min(T.quantityOfCargo);
+    qHigh = max(T.quantityOfCargo);
+    tauLow = min(T.carbonTax);
+    tauHigh = max(T.carbonTax);
+
+    T.corner = repmat({''}, height(T), 1);
+    for i = 1:height(T)
+        if T.quantityOfCargo(i) == qLow && T.carbonTax(i) == tauLow
+            T.corner{i} = 'LL';
+        elseif T.quantityOfCargo(i) == qHigh && T.carbonTax(i) == tauLow
+            T.corner{i} = 'HL';
+        elseif T.quantityOfCargo(i) == qLow && T.carbonTax(i) == tauHigh
+            T.corner{i} = 'LH';
+        elseif T.quantityOfCargo(i) == qHigh && T.carbonTax(i) == tauHigh
+            T.corner{i} = 'HH';
+        else
+            T.corner{i} = 'OTHER';
+        end
+    end
+
+    keepMask = ismember(T.corner, {'LL','HL','LH','HH'});
+    T = T(keepMask,:);
+    if isempty(T)
+        return;
+    end
+
+    solTypes = unique(T.solutionType, 'stable');
+    rowCell = {};
+    for s = 1:numel(solTypes)
+        S = T(strcmp(T.solutionType, solTypes{s}), :);
+        if height(S) < 4
+            continue;
+        end
+        R = struct();
+        R.solutionType = solTypes{s};
+        R.LL_signature = getCornerValue(S, 'LL', 'signature');
+        R.HL_signature = getCornerValue(S, 'HL', 'signature');
+        R.LH_signature = getCornerValue(S, 'LH', 'signature');
+        R.HH_signature = getCornerValue(S, 'HH', 'signature');
+
+        R.LL_cost = getCornerValue(S, 'LL', 'totalCost');
+        R.HL_cost = getCornerValue(S, 'HL', 'totalCost');
+        R.LH_cost = getCornerValue(S, 'LH', 'totalCost');
+        R.HH_cost = getCornerValue(S, 'HH', 'totalCost');
+
+        R.LL_emission = getCornerValue(S, 'LL', 'totalEmission');
+        R.HL_emission = getCornerValue(S, 'HL', 'totalEmission');
+        R.LH_emission = getCornerValue(S, 'LH', 'totalEmission');
+        R.HH_emission = getCornerValue(S, 'HH', 'totalEmission');
+
+        R.deltaQ_atLowTau_cost = R.HL_cost - R.LL_cost;
+        R.deltaQ_atHighTau_cost = R.HH_cost - R.LH_cost;
+        R.deltaTau_atLowQ_cost = R.LH_cost - R.LL_cost;
+        R.deltaTau_atHighQ_cost = R.HH_cost - R.HL_cost;
+        rowCell{end+1,1} = R; %#ok<AGROW>
+    end
+
+    if ~isempty(rowCell)
+        rows = vertcat(rowCell{:});
+    end
+end
+
+function v = getCornerValue(T, cornerName, fieldName)
+    idx = strcmp(T.corner, cornerName);
+    if ~any(idx)
+        if isnumeric(T.(fieldName))
+            v = NaN;
+        else
+            v = '';
+        end
+        return;
+    end
+    val = T.(fieldName)(find(idx,1,'first'));
+    if iscell(val)
+        v = val{1};
+    else
+        v = val;
+    end
 end
 
 function [distanceOfPath, distanceArray, hasInvalidEdge] = getDistanceCompat(path, typeOfPath, model)
