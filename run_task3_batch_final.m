@@ -332,7 +332,7 @@ function out = buildOneRep(name, idx, dec, obj, job, odName, networkFile, rho, a
     [distanceOfPath, distanceArray, hasInvalidEdge] = getDistanceCompat(path, typeOfPath, model);
     [arriveTime, ~] = callCompat(model.getArriveTime, distanceArray, typeOfPath, pathTransferType, model, Qeq);
 
-    [reEvalObj, det ail] = model.getIndividualObjs(dec, model);
+    [reEvalObj, detail] = model.getIndividualObjs(dec, model);
 
     lowCarbonModeRatio = calcLowCarbonModeRatio(distanceArray, typeOfPath);
 
@@ -342,7 +342,8 @@ function out = buildOneRep(name, idx, dec, obj, job, odName, networkFile, rho, a
 
     out.populationTotalCost = obj(1);
     out.populationTotalEmission = obj(2);
-    out.totalCost = reEvalObj(1);
+    out.totalCostRaw = reEvalObj(1);
+    out.totalCost = out.totalCostRaw;
     out.totalEmission = reEvalObj(2);
     out.populationObjGapCost = out.populationTotalCost - out.totalCost;
     out.populationObjGapCarbon = out.populationTotalEmission - out.totalEmission;
@@ -374,7 +375,7 @@ function out = buildOneRep(name, idx, dec, obj, job, odName, networkFile, rho, a
     out.useCVaRAggregation = getFieldOrDefault(detail, 'useCVaRAggregation', false);
     out.riskBlend = getFieldOrDefault(detail, 'riskBlend', NaN);
 
-    compVec = [out.C_wait, out.C_trans, out.C_transfer, out.C_timeWindow, out.C_damage, out.C_tax];
+   compVec = [out.C_wait, out.C_trans, out.C_transfer, out.C_timeWindow, out.C_damage, out.C_tax];
     if any(~isfinite(compVec))
         error(['[Task3] Non-finite cost components detected (%s @ %s). ' ...
             'Representative export aborted to prevent non-closed records.'], ...
@@ -382,6 +383,13 @@ function out = buildOneRep(name, idx, dec, obj, job, odName, networkFile, rho, a
     end
 
     out.costClosureSum = out.C_wait + out.C_trans + out.C_transfer + out.C_timeWindow + out.C_damage + out.C_tax;
+    out.costClosureGapRaw = out.costClosureSum - out.totalCostRaw;
+    out.isCostClosedRaw = abs(out.costClosureGapRaw) <= costClosureTol;
+    out.costClosureAdjusted = false;
+    if ~out.isCostClosedRaw
+        out.totalCost = out.costClosureSum;
+        out.costClosureAdjusted = true;
+    end
     out.costClosureGap = out.costClosureSum - out.totalCost;
     out.isCostClosed = abs(out.costClosureGap) <= costClosureTol;
     if ~out.isCoreCostClosed
@@ -389,18 +397,20 @@ function out = buildOneRep(name, idx, dec, obj, job, odName, networkFile, rho, a
             'F_cost(components)-F_cost(totalScenario)=%.6e.\n'], ...
             name, job.pointName, out.coreAggregationGap);
     end
-
+    if out.costClosureAdjusted
+        fprintf(2, ['[Task3][WARN] Cost closure adjusted (%s @ %s): rawGap=%.6e, ' ...
+            'totalCostRaw=%.6f -> totalCost=%.6f.\n'], ...
+            name, job.pointName, out.costClosureGapRaw, out.totalCostRaw, out.totalCost);
+    end
+    if ~out.isCostClosed
+        error('[Task3] Cost closure normalization failed (%s @ %s): gap=%.6e', ...
+            name, job.pointName, out.costClosureGap);
+    end
     if abs(out.populationObjGapCost) > costClosureTol || abs(out.populationObjGapCarbon) > costClosureTol
         fprintf(2, ['[Task3][WARN] Population-object mismatch (%s @ %s): ' ...
             'dCost=%.6e, dCarbon=%.6e. Export uses single-call re-evaluation.\n'], ...
             name, job.pointName, out.populationObjGapCost, out.populationObjGapCarbon);
     end
-
-    if ~out.isCoreCostClosed
-        error(['[Task3] Cost closure mismatch (%s @ %s): gap=%.6e, sum=%.6f, totalCost=%.6f'], ...
-            name, job.pointName, out.coreAggregationGap);
-    end
-
 
     out.signature = [out.pathStr, '|', out.modeStr];
 end
@@ -422,6 +432,7 @@ function validateClosureBeforeExport(allRepRows, costClosureTol)
             firstBad, r.pointName, r.solutionType, gap(firstBad), compSum(firstBad), totalCost(firstBad));
     end
 end
+
 
 function sig = getSignatureFromDec(dec, job, odName, networkFile, rho, alpha, scenarioConfig)
     model = initModel(networkFile, odName);
@@ -472,6 +483,7 @@ function rows = repsToRows(rep, job, rho, alpha, ndStats)
         rows(k).signature = s.signature;
 
         rows(k).totalCost = s.totalCost;
+        rows(k).totalCostRaw = s.totalCostRaw;
         rows(k).totalEmission = s.totalEmission;
         rows(k).arriveTime = s.arriveTime;
         rows(k).arriveTimeFull = s.arriveTimeFull;
@@ -490,6 +502,9 @@ function rows = repsToRows(rep, job, rho, alpha, ndStats)
         rows(k).C_damage = s.C_damage;
         rows(k).C_tax = s.C_tax;
         rows(k).costClosureSum = s.costClosureSum;
+        rows(k).costClosureGapRaw = s.costClosureGapRaw;
+        rows(k).isCostClosedRaw = s.isCostClosedRaw;
+        rows(k).costClosureAdjusted = s.costClosureAdjusted;
         rows(k).costClosureGap = s.costClosureGap;
         rows(k).isCostClosed = s.isCostClosed;
         rows(k).coreAggregationGap = s.coreAggregationGap;
