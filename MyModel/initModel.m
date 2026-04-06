@@ -612,14 +612,11 @@ function [individualObjs, detail] = getIndividualObjs(individual, model)
     end
 
     c_tax_s = model.carbonTax .* e_total_s;
-   compScenarioMat = [c_wait_s; c_trans_s; c_transfer_s; c_timeWindow_s; c_damage_s; c_tax_s];
+     compScenarioMat = [c_wait_s; c_trans_s; c_transfer_s; c_timeWindow_s; c_damage_s; c_tax_s];
     c_total_s = sum(compScenarioMat, 1);
-    scenarioClosureGap = c_total_s - sum(compScenarioMat, 1);
-    if any(abs(scenarioClosureGap) > 1e-8)
-        firstBad = find(abs(scenarioClosureGap) > 1e-8, 1, 'first');
-        error(['[initModel/getIndividualObjs] Scenario-level cost closure failed at s=%d: ' ...
-            'gap=%.6e. Check c_timeWindow_s and c_total_s construction consistency.'], ...
-            firstBad, scenarioClosureGap(firstBad));
+    if any(~isfinite(c_total_s))
+        firstBad = find(~isfinite(c_total_s), 1, 'first');
+        error('[initModel/getIndividualObjs] Non-finite c_total_s detected at scenario %d.', firstBad);
     end
 
     % 唯一总成本口径：先聚合场景总成本，再使用同一组风险权重分解六项成本
@@ -661,6 +658,7 @@ function [individualObjs, detail] = getIndividualObjs(individual, model)
     detail.C_damage_s = c_damage_s;
     detail.C_tax_s = c_tax_s;
     detail.C_total_s = c_total_s;
+    detail.E_total_s = e_total_s;
     detail.costAggregationWeights = aggW_cost;
     detail.F_costAggregationGap = closureGapCore;
     detail.isCostClosedCore = abs(closureGapCore) <= 1e-8;
