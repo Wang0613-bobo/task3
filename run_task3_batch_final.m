@@ -270,6 +270,7 @@ function [rep, ndStats] = extractRepresentativeSolutions(finalPopulation, job, s
     ndMask = (frontNo == 1);
     ndObj = reEvalObjAll(ndMask,:);
     ndDec = popDec(ndMask,:);
+    ndObjPop = popObj(ndMask,:);
     ndIdx = find(ndMask);
     ndDetail = detailAll(ndMask);
 
@@ -316,6 +317,9 @@ function [rep, ndStats] = extractRepresentativeSolutions(finalPopulation, job, s
     end
 
     ndStats.finalPopulationSource = finalPopulationSource;
+    ndStats.maxObjGapCost = maxObjGap(1);
+    ndStats.maxObjGapCarbon = maxObjGap(2);
+    ndStats.isObjConsistentPopulation = isObjConsistentPopulation;
     ndStats.rawPopSize = size(popObj,1);
     ndStats.uniqueObjCount = size(unique(reEvalObjAll, 'rows'), 1);
     ndStats.nND = size(ndObj,1);
@@ -371,8 +375,8 @@ function out = buildOneRep(name, idx, dec, obj, detail, job, odName, networkFile
     out.solutionType = name;
     out.populationIndex = idx;
 
-    out.populationTotalCost = obj(1);
-    out.populationTotalEmission = obj(2);
+    out.populationTotalCost = popObjRef(1);
+    out.populationTotalEmission = popObjRef(2);
     out.totalCostRaw = reEvalObj(1);
     out.totalCost = out.totalCostRaw;
     out.totalEmission = reEvalObj(2);
@@ -423,7 +427,7 @@ function out = buildOneRep(name, idx, dec, obj, detail, job, odName, networkFile
         error('[Task3] Core model closure flag invalid (%s @ %s): gap=%.6e', ...
             name, job.pointName, out.coreAggregationGap);
     end
-     if ~out.isCostClosedRaw
+    if ~out.isCostClosedRaw
         error(['[Task3] Raw cost not closed (%s @ %s): rawTotal=%.10f, componentsSum=%.10f, ' ...
             'rawGap=%.6e. Export stage is validation-only and will not auto-correct.'], ...
             name, job.pointName, out.totalCostRaw, out.costClosureSum, out.costClosureGapRaw);
@@ -595,6 +599,9 @@ function row = buildSummaryRow(rep, job, saveFile, rho, alpha, ndStats)
     row.uniqueObjRatio = ndStats.uniqueObjRatio;
     row.uniqueNDRatio = ndStats.uniqueNDRatio;
     row.ndDuplicateRatio = ndStats.ndDuplicateRatio;
+    row.maxObjGapCost = ndStats.maxObjGapCost;
+    row.maxObjGapCarbon = ndStats.maxObjGapCarbon;
+    row.isObjConsistentPopulation = ndStats.isObjConsistentPopulation;
     row.isAllPopulationNearlyND = ndStats.isAllPopulationNearlyND;
     row.ndSemanticNote = ndStats.ndSemanticNote;
     row.ndDensityClass = ndStats.ndDensityClass;
