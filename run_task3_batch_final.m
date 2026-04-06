@@ -22,6 +22,7 @@ rho = 0.20;
 alpha = 0.80;
 costClosureTol = 1e-6;
 objConsistencyTol = 1e-8;
+
 % Scenario-planning configuration
 scenarioConfig = struct();
 scenarioConfig.numDemandScenarios = 9;
@@ -294,9 +295,9 @@ function [rep, ndStats] = extractRepresentativeSolutions(finalPopulation, job, s
     [~, iTradeND] = min(score);
 
     rep = struct();
-    rep.CostBest   = buildOneRep('CostBest', ndIdx(iCostND), ndDec(iCostND,:), ndObj(iCostND,:), ndDetail(iCostND), job, odName, networkFile, rho, alpha, scenarioConfig, costClosureTol);
-    rep.CarbonBest = buildOneRep('CarbonBest', ndIdx(iCarbonND), ndDec(iCarbonND,:), ndObj(iCarbonND,:), ndDetail(iCarbonND), job, odName, networkFile, rho, alpha, scenarioConfig, costClosureTol);
-    rep.Tradeoff   = buildOneRep('Tradeoff', ndIdx(iTradeND), ndDec(iTradeND,:), ndObj(iTradeND,:), ndDetail(iTradeND), job, odName, networkFile, rho, alpha, scenarioConfig, costClosureTol);
+    rep.CostBest   = buildOneRep('CostBest', ndIdx(iCostND), ndDec(iCostND,:), ndObj(iCostND,:), ndDetail{iCostND}, job, odName, networkFile, rho, alpha, scenarioConfig, costClosureTol);
+    rep.CarbonBest = buildOneRep('CarbonBest', ndIdx(iCarbonND), ndDec(iCarbonND,:), ndObj(iCarbonND,:), ndDetail{iCarbonND}, job, odName, networkFile, rho, alpha, scenarioConfig, costClosureTol);
+    rep.Tradeoff   = buildOneRep('Tradeoff', ndIdx(iTradeND), ndDec(iTradeND,:), ndObj(iTradeND,:), ndDetail{iTradeND}, job, odName, networkFile, rho, alpha, scenarioConfig, costClosureTol);
 
     [~, iCostMaxND] = max(ndObj(:,1));
     [~, iCarbonMaxND] = max(ndObj(:,2));
@@ -305,7 +306,7 @@ function [rep, ndStats] = extractRepresentativeSolutions(finalPopulation, job, s
 
     ndStats = struct();
 
-     ndRepObj = [rep.CostBest.totalCost, rep.CostBest.totalEmission; ...
+    ndRepObj = [rep.CostBest.totalCost, rep.CostBest.totalEmission; ...
         rep.CarbonBest.totalCost, rep.CarbonBest.totalEmission; ...
         rep.Tradeoff.totalCost, rep.Tradeoff.totalEmission];
     domAmongRep = any(any((ndRepObj(:,1) <= ndRepObj(:,1)' & ndRepObj(:,2) <= ndRepObj(:,2)') & ...
@@ -337,7 +338,7 @@ function [rep, ndStats] = extractRepresentativeSolutions(finalPopulation, job, s
     ndStats.extremeSignatureSet = strjoin(unique({rep.CostBest.signature, rep.CarbonBest.signature, sigCostMax, sigCarbonMax}, 'stable'), ';');
 end
 
-function out = buildOneRep(name, idx, dec, obj, job,detail, odName, networkFile, rho, alpha, scenarioConfig, costClosureTol)
+function out = buildOneRep(name, idx, dec, obj, detail, job, odName, networkFile, rho, alpha, scenarioConfig, costClosureTol)
     model = initModel(networkFile, odName);
     model.carbonTax = job.carbonTax;
     model.costOfUnitCarbon = job.carbonTax;
@@ -426,7 +427,7 @@ function out = buildOneRep(name, idx, dec, obj, job,detail, odName, networkFile,
         error(['[Task3] Raw cost not closed (%s @ %s): rawTotal=%.10f, componentsSum=%.10f, ' ...
             'rawGap=%.6e. Export stage is validation-only and will not auto-correct.'], ...
             name, job.pointName, out.totalCostRaw, out.costClosureSum, out.costClosureGapRaw);
-     end
+    end
 
     out.signature = [out.pathStr, '|', out.modeStr];
     out.labelSemantic = mapLabelSemantic(name);
@@ -527,7 +528,6 @@ function rows = repsToRows(rep, job, rho, alpha, ndStats)
         rows(k).isCostClosed = s.isCostClosed;
         rows(k).coreAggregationGap = s.coreAggregationGap;
         rows(k).isCoreCostClosed = s.isCoreCostClosed;
-      
 
         rows(k).hasInvalidEdge = s.hasInvalidEdge;
         rows(k).finalPopulationSource = ndStats.finalPopulationSource;
@@ -921,6 +921,7 @@ function x = getFieldOrDefault(S, f, defaultValue)
     end
 end
 
+
 function [reEvalObjAll, detailAll] = reEvaluatePopulation(popDec, job, odName, networkFile, rho, alpha, scenarioConfig)
     model = initModel(networkFile, odName);
     model.carbonTax = job.carbonTax;
@@ -933,11 +934,11 @@ function [reEvalObjAll, detailAll] = reEvaluatePopulation(popDec, job, odName, n
 
     n = size(popDec,1);
     reEvalObjAll = nan(n,2);
-    detailAll = repmat(struct(), n, 1);
+    detailAll = cell(n,1);
     for i = 1:n
         [obj, detail] = model.getIndividualObjs(popDec(i,:), model);
         reEvalObjAll(i,:) = obj;
-        detailAll(i,1) = detail;
+        detailAll{i,1} = detail;
     end
 end
 

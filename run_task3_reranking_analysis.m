@@ -58,6 +58,9 @@ writetable(Treplace, fullfile(outRoot, 'task3_typical_replacement_events.xlsx'))
 Tcorner = buildFourCornerEffectTable(plotData.fourcornerComparison);
 writetable(Tcorner, fullfile(outRoot, 'task3_fourcorner_effects_table.xlsx'));
 
+Tdriver = buildDriverFrequencyTable(T);
+writetable(Tdriver, fullfile(outRoot, 'task3_driver_frequency_table.xlsx'));
+
 % 4) 作图（PNG + FIG）
 figBase = plotSingleFactorBaseFigure(R, figDir);
 figCost = plotCombinedEffectFigure(Tcorner, figDir, 'cost');
@@ -69,7 +72,7 @@ captionFile = fullfile(outRoot, 'task3_figure_caption_suggestions.txt');
 writeFigureCaptionSuggestions(captionFile);
 
 save(fullfile(outRoot, 'task3_reranking_analysis_artifacts.mat'), ...
-    'T', 'Tswitch', 'R', 'Treplace', 'Tcorner', 'figBase', 'figCost', 'figEmis', 'figLocal', 'captionFile');
+    'T', 'Tswitch', 'R', 'Treplace', 'Tcorner', 'Tdriver', 'figBase', 'figCost', 'figEmis', 'figLocal', 'captionFile');
 
 fprintf('[Task3-Rerank] 保存完成：%s\n', outRoot);
 
@@ -288,9 +291,9 @@ end
 function writeFigureCaptionSuggestions(filePath)
 lines = {
 '图注建议1（基础图）: 在固定碳价与固定需求的单因素条件下，三类代表解均出现轨迹变化，说明单因素扰动已可触发方案重排；该图用于提供机制铺垫，不作为双因素联合作用主证据。';
-'图注建议2（组合条件效应对照图-成本侧）: 在四角点组合条件下，低/高碳价两条线在低需求与高需求区间的变化幅度不同，表明需求效应会随低碳约束水平而改变。';
-'图注建议3（组合条件效应对照图-排放侧）: 成本侧之外，排放侧同样表现出组合条件下的效应差异，进一步支持双因素联合作用并非单一指标现象。';
-'图注建议4（局部二维重排图）: 在局部扫描区域内，代表解在“保持原方案—仅路径切换—路径与方式同步切换”三类状态间转移，体现了路径层与方式层的分层重排特征。'
+'图注建议2（组合条件效应对照图-成本侧）: 在四角点组合条件下，低/高碳价两条线在低需求与高需求区间的变化幅度不同，可作为“组合条件触发重排”的描述性证据。';
+'图注建议3（组合条件效应对照图-排放侧）: 成本侧之外，排放侧同样表现出组合条件下的效应差异，说明结果在多指标上具有一致方向，但仍属于结果识别而非机制证明。';
+'图注建议4（局部二维重排图）: 在局部扫描区域内，代表解在“保持原方案—仅路径切换—路径与方式同步切换”三类状态间转移；结合主驱动统计可报告“时间窗成本常为主要伴随项”，避免将碳税单独表述为唯一主导。'
 };
 fid = fopen(filePath, 'w');
 for i = 1:numel(lines)
@@ -306,12 +309,44 @@ switch lower(axisName)
     case 'tax'
         [~, idx] = sort(A.carbonTax, 'ascend');
     case 'fourcorner'
-        key = (A.quantityOfCargo - min(A.quantityOfCargo)) .* 1000 + A.carbonTax;
-        [~, idx] = sort(key, 'ascend');
+        cornerOrder = arrayfun(@(q,t) localFourCornerOrder(q,t,A), A.quantityOfCargo, A.carbonTax);
+        [~, idx] = sort(cornerOrder, 'ascend');
     otherwise
         [~, idx] = sortrows([A.carbonTax, A.quantityOfCargo], [1,2]);
 end
 A = A(idx,:);
+end
+
+
+function Tdriver = buildDriverFrequencyTable(T)
+S = T(~strcmp(T.switchType, 'Initial'), :);
+if isempty(S)
+    Tdriver = table();
+    return;
+end
+[G, solutionType, axisType, mainDriver] = findgroups(S.solutionType, S.axisType, S.mainDriver);
+counts = splitapply(@numel, S.mainDriver, G);
+Tdriver = table(solutionType, axisType, mainDriver, counts, 'VariableNames', ...
+    {'solutionType','axisType','mainDriver','count'});
+Tdriver = sortrows(Tdriver, {'solutionType','axisType','count'}, {'ascend','ascend','descend'});
+end
+
+function ord = localFourCornerOrder(q, tau, T)
+qLow = min(T.quantityOfCargo);
+qHigh = max(T.quantityOfCargo);
+tauLow = min(T.carbonTax);
+tauHigh = max(T.carbonTax);
+if q == qLow && tau == tauLow
+    ord = 1; % LL
+elseif q == qLow && tau == tauHigh
+    ord = 2; % LH
+elseif q == qHigh && tau == tauLow
+    ord = 3; % HL
+elseif q == qHigh && tau == tauHigh
+    ord = 4; % HH
+else
+    ord = 99;
+end
 end
 
 function s = yesNo(tf)
