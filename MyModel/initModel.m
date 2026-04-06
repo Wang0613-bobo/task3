@@ -611,17 +611,22 @@ function [individualObjs, detail] = getIndividualObjs(individual, model)
         return;
     end
 
+    c_tax_s = model.carbonTax .* e_total_s;
+    c_total_s = c_wait_s + c_trans_s + c_transfer_s + c_timeWindow_s + c_damage_s + c_tax_s;
+
+
     C_wait = aggregateScenarioValues(c_wait_s, w, model.confidenceLevel, model.useCVaRAggregation, model.riskBlend);
     C_trans = aggregateScenarioValues(c_trans_s, w, model.confidenceLevel, model.useCVaRAggregation, model.riskBlend);
     C_transfer = aggregateScenarioValues(c_transfer_s, w, model.confidenceLevel, model.useCVaRAggregation, model.riskBlend);
     C_timeWindow = aggregateScenarioValues(c_timeWindow_s, w, model.confidenceLevel, model.useCVaRAggregation, model.riskBlend);
     C_damage = aggregateScenarioValues(c_damage_s, w, model.confidenceLevel, model.useCVaRAggregation, model.riskBlend);
     E_total = aggregateScenarioValues(e_total_s, w, model.confidenceLevel, model.useCVaRAggregation, model.riskBlend);
-
+    C_tax = aggregateScenarioValues(c_tax_s, w, model.confidenceLevel, model.useCVaRAggregation, model.riskBlend);
+    
     C_base = C_wait + C_trans + C_transfer + C_timeWindow + C_damage;
-    C_tax = model.carbonTax * E_total;
-
-    F_cost = C_base + C_tax;
+    F_cost_fromComponents = C_base + C_tax;
+    F_cost_fromTotalScenario = aggregateScenarioValues(c_total_s, w, model.confidenceLevel, model.useCVaRAggregation, model.riskBlend);
+    F_cost = F_cost_fromComponents;
     F_carbon = E_total;
 
     individualObjs = [F_cost, F_carbon];
@@ -633,6 +638,17 @@ function [individualObjs, detail] = getIndividualObjs(individual, model)
     detail.C_timeWindow = C_timeWindow;
     detail.C_damage = C_damage;
     detail.C_tax = C_tax;
+    detail.C_wait_s = c_wait_s;
+    detail.C_trans_s = c_trans_s;
+    detail.C_transfer_s = c_transfer_s;
+    detail.C_timeWindow_s = c_timeWindow_s;
+    detail.C_damage_s = c_damage_s;
+    detail.C_tax_s = c_tax_s;
+    detail.C_total_s = c_total_s;
+    detail.F_cost_fromComponents = F_cost_fromComponents;
+    detail.F_cost_fromTotalScenario = F_cost_fromTotalScenario;
+    detail.F_costAggregationGap = F_cost_fromComponents - F_cost_fromTotalScenario;
+    detail.isCostClosedCore = abs(detail.F_costAggregationGap) <= 1e-8;
     detail.distanceOfPath = distanceOfPath;
 end
 
