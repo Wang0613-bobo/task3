@@ -612,26 +612,39 @@ function [individualObjs, detail] = getIndividualObjs(individual, model)
     end
 
     c_tax_s = model.carbonTax .* e_total_s;
-    c_total_s = c_wait_s + c_trans_s + c_transfer_s + c_timeWindow_s + c_damage_s + c_tax_s;
+    compScenarioMat = [c_wait_s; c_trans_s; c_transfer_s; c_timeWindow_s; c_damage_s; c_tax_s];
+    c_total_s = sum(compScenarioMat, 1);
+    if any(~isfinite(c_total_s))
+        firstBad = find(~isfinite(c_total_s), 1, 'first');
+        error('[initModel/getIndividualObjs] Non-finite c_total_s detected at scenario %d.', firstBad);
+    end
 
-
-    C_wait = aggregateScenarioValues(c_wait_s, w, model.confidenceLevel, model.useCVaRAggregation, model.riskBlend);
-    C_trans = aggregateScenarioValues(c_trans_s, w, model.confidenceLevel, model.useCVaRAggregation, model.riskBlend);
-    C_transfer = aggregateScenarioValues(c_transfer_s, w, model.confidenceLevel, model.useCVaRAggregation, model.riskBlend);
-    C_timeWindow = aggregateScenarioValues(c_timeWindow_s, w, model.confidenceLevel, model.useCVaRAggregation, model.riskBlend);
-    C_damage = aggregateScenarioValues(c_damage_s, w, model.confidenceLevel, model.useCVaRAggregation, model.riskBlend);
+    % 唯一总成本口径：先聚合场景总成本，再使用同一组风险权重分解六项成本
+    F_cost = aggregateScenarioValues(c_total_s, w, model.confidenceLevel, model.useCVaRAggregation, model.riskBlend);
+    aggW_cost = getAggregationWeights(c_total_s, w, model.confidenceLevel, model.useCVaRAggregation, model.riskBlend);
+    if any(~isfinite(aggW_cost)) || any(aggW_cost < -1e-12) || abs(sum(aggW_cost) - 1) > 1e-10
+        error('[initModel/getIndividualObjs] Invalid cost aggregation weights detected.');
+    end
+    C_wait = sum(aggW_cost .* c_wait_s);
+    C_trans = sum(aggW_cost .* c_trans_s);
+    C_transfer = sum(aggW_cost .* c_transfer_s);
+    C_timeWindow = sum(aggW_cost .* c_timeWindow_s);
+    C_damage = sum(aggW_cost .* c_damage_s);
+    C_tax = sum(aggW_cost .* c_tax_s);
     E_total = aggregateScenarioValues(e_total_s, w, model.confidenceLevel, model.useCVaRAggregation, model.riskBlend);
-    C_tax = aggregateScenarioValues(c_tax_s, w, model.confidenceLevel, model.useCVaRAggregation, model.riskBlend);
-    
-    C_base = C_wait + C_trans + C_transfer + C_timeWindow + C_damage;
-    F_cost_fromComponents = C_base + C_tax;
-    F_cost_fromTotalScenario = aggregateScenarioValues(c_total_s, w, model.confidenceLevel, model.useCVaRAggregation, model.riskBlend);
-    F_cost = F_cost_fromComponents;
+
+    closureGapCore = F_cost - (C_wait + C_trans + C_transfer + C_timeWindow + C_damage + C_tax);
+    if abs(closureGapCore) > 1e-8
+        error(['[initModel/getIndividualObjs] Core cost closure failed: F_cost=%.10f, ' ...
+            'componentsSum=%.10f, gap=%.6e'], ...
+            F_cost, (C_wait + C_trans + C_transfer + C_timeWindow + C_damage + C_tax), closureGapCore);
+    end
     F_carbon = E_total;
 
     individualObjs = [F_cost, F_carbon];
 
     detail.arriveTime = arriveTime(end);
+    detail.arriveTimeVector = arriveTime;
     detail.C_wait = C_wait;
     detail.C_trans = C_trans;
     detail.C_transfer = C_transfer;
@@ -644,42 +657,58 @@ function [individualObjs, detail] = getIndividualObjs(individual, model)
     detail.C_timeWindow_s = c_timeWindow_s;
     detail.C_damage_s = c_damage_s;
     detail.C_tax_s = c_tax_s;
+    detail.E_total_s = e_total_s;
     detail.C_total_s = c_total_s;
-    detail.F_cost_fromComponents = F_cost_fromComponents;
-    detail.F_cost_fromTotalScenario = F_cost_fromTotalScenario;
-    detail.F_costAggregationGap = F_cost_fromComponents - F_cost_fromTotalScenario;
-    detail.isCostClosedCore = abs(detail.F_costAggregationGap) <= 1e-8;
+    detail.costAggregationWeights = aggW_cost;
+    detail.F_costAggregationGap = closureGapCore;
+    detail.isCostClosedCore = abs(closureGapCore) <= 1e-8;
     detail.distanceOfPath = distanceOfPath;
 end
 
 function agg = aggregateScenarioValues(values, probs, alpha, useCVaRAggregation, riskBlend)
+    weights = getAggregationWeights(values, probs, alpha, useCVaRAggregation, riskBlend);
+    agg = sum(weights .* values(:)');
+end
+
+function weights = getAggregationWeights(values, probs, alpha, useCVaRAggregation, riskBlend)
     values = values(:)';
     probs = probs(:)';
+    if any(~isfinite(probs)) || any(probs < 0)
+        error('[initModel/getAggregationWeights] probs must be finite and nonnegative.');
+    end
+    if sum(probs) <= 0
+        error('[initModel/getAggregationWeights] probs sum must be positive.');
+    end
     probs = probs / sum(probs);
-    expVal = sum(values .* probs);
 
     if ~useCVaRAggregation
-        agg = expVal;
+        weights = probs;
         return;
     end
 
     alpha = max(0, min(0.99, alpha));
     riskBlend = max(0, min(1, riskBlend));
 
-    [vSort, idx] = sort(values, 'ascend');
+    [~, idx] = sort(values, 'ascend');
     pSort = probs(idx);
     cdf = cumsum(pSort);
     tailMask = cdf >= alpha;
 
+    tailWeight = zeros(size(values));
     if ~any(tailMask)
-        cvarVal = vSort(end);
+        tailWeight(idx(end)) = 1;
     else
+        tailIdx = idx(tailMask);
         pTail = pSort(tailMask);
+        if sum(pTail) <= 0
+            error('[initModel/getAggregationWeights] Tail probability sum must be positive.');
+        end
         pTail = pTail / sum(pTail);
-        cvarVal = sum(vSort(tailMask) .* pTail);
+        tailWeight(tailIdx) = pTail;
     end
 
-    agg = (1 - riskBlend) * expVal + riskBlend * cvarVal;
+    weights = (1 - riskBlend) * probs + riskBlend * tailWeight;
+    weights = weights / sum(weights);
 end
 
 function individualFitness = getIndividualFitness(individual, model)

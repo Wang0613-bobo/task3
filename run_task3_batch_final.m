@@ -324,15 +324,20 @@ function out = buildOneRep(name, idx, dec, obj, job, odName, networkFile, rho, a
     model.confidenceLevel = alpha;
     model = applyScenarioConfig(model, scenarioConfig);
 
+    [reEvalObj, detail] = model.getIndividualObjs(dec, model);
     Qeq = model.getEquivalentDemand(model);
 
-    [path, typeOfPath] = callCompat(model.analyseIndividual, dec, model);
+    path = getFieldOrDefault(detail, 'path', []);
+    typeOfPath = getFieldOrDefault(detail, 'typeOfPath', []);
+    if isempty(path) || isempty(typeOfPath)
+        error('[Task3] Missing path/type in detail from getIndividualObjs (%s @ %s).', name, job.pointName);
+    end
     pathTransferType = callCompat(model.getPathTransferType, typeOfPath, model);
-
     [distanceOfPath, distanceArray, hasInvalidEdge] = getDistanceCompat(path, typeOfPath, model);
-    [arriveTime, ~] = callCompat(model.getArriveTime, distanceArray, typeOfPath, pathTransferType, model, Qeq);
-
-    [reEvalObj, detail] = model.getIndividualObjs(dec, model);
+    arriveTimeVec = getFieldOrDefault(detail, 'arriveTimeVector', []);
+    if isempty(arriveTimeVec)
+        [arriveTimeVec, ~] = callCompat(model.getArriveTime, distanceArray, typeOfPath, pathTransferType, model, Qeq);
+    end
 
     lowCarbonModeRatio = calcLowCarbonModeRatio(distanceArray, typeOfPath);
 
@@ -350,8 +355,8 @@ function out = buildOneRep(name, idx, dec, obj, job, odName, networkFile, rho, a
     out.coreAggregationGap = getFieldOrDefault(detail, 'F_costAggregationGap', NaN);
     out.isCoreCostClosed = getFieldOrDefault(detail, 'isCostClosedCore', true);
 
-    out.arriveTime = arriveTime(end);
-    out.arriveTimeFull = joinNum(arriveTime, '->', '%.2f');
+    out.arriveTime = arriveTimeVec(end);
+    out.arriveTimeFull = joinNum(arriveTimeVec, '->', '%.2f');
     out.lowCarbonModeRatio = lowCarbonModeRatio;
 
     out.pathStr = joinNum(path, '-', '%d');
@@ -375,7 +380,7 @@ function out = buildOneRep(name, idx, dec, obj, job, odName, networkFile, rho, a
     out.useCVaRAggregation = getFieldOrDefault(detail, 'useCVaRAggregation', false);
     out.riskBlend = getFieldOrDefault(detail, 'riskBlend', NaN);
 
-   compVec = [out.C_wait, out.C_trans, out.C_transfer, out.C_timeWindow, out.C_damage, out.C_tax];
+    compVec = [out.C_wait, out.C_trans, out.C_transfer, out.C_timeWindow, out.C_damage, out.C_tax];
     if any(~isfinite(compVec))
         error(['[Task3] Non-finite cost components detected (%s @ %s). ' ...
             'Representative export aborted to prevent non-closed records.'], ...
@@ -386,25 +391,17 @@ function out = buildOneRep(name, idx, dec, obj, job, odName, networkFile, rho, a
     out.costClosureGapRaw = out.costClosureSum - out.totalCostRaw;
     out.isCostClosedRaw = abs(out.costClosureGapRaw) <= costClosureTol;
     out.costClosureAdjusted = false;
-    if ~out.isCostClosedRaw
-        out.totalCost = out.costClosureSum;
-        out.costClosureAdjusted = true;
-    end
-    out.costClosureGap = out.costClosureSum - out.totalCost;
-    out.isCostClosed = abs(out.costClosureGap) <= costClosureTol;
-    if ~out.isCoreCostClosed
-        fprintf(2, ['[Task3][WARN] Core aggregation diagnostic (%s @ %s): ' ...
-            'F_cost(components)-F_cost(totalScenario)=%.6e.\n'], ...
+    out.costClosureGap = out.costClosureGapRaw;
+    out.isCostClosed = out.isCostClosedRaw;
+    if ~out.isCoreCostClosed || ~isfinite(out.coreAggregationGap)
+        error('[Task3] Core model closure flag invalid (%s @ %s): gap=%.6e', ...
             name, job.pointName, out.coreAggregationGap);
     end
-    if out.costClosureAdjusted
-        fprintf(2, ['[Task3][WARN] Cost closure adjusted (%s @ %s): rawGap=%.6e, ' ...
-            'totalCostRaw=%.6f -> totalCost=%.6f.\n'], ...
-            name, job.pointName, out.costClosureGapRaw, out.totalCostRaw, out.totalCost);
-    end
-    if ~out.isCostClosed
-        error('[Task3] Cost closure normalization failed (%s @ %s): gap=%.6e', ...
-            name, job.pointName, out.costClosureGap);
+    checkDetailClosureConsistency(detail, out.totalCostRaw, costClosureTol, name, job.pointName);
+    if ~out.isCostClosedRaw
+        error(['[Task3] Raw cost not closed (%s @ %s): rawTotal=%.10f, componentsSum=%.10f, ' ...
+            'rawGap=%.6e. Export stage is validation-only and will not auto-correct.'], ...
+            name, job.pointName, out.totalCostRaw, out.costClosureSum, out.costClosureGapRaw);
     end
     if abs(out.populationObjGapCost) > costClosureTol || abs(out.populationObjGapCarbon) > costClosureTol
         fprintf(2, ['[Task3][WARN] Population-object mismatch (%s @ %s): ' ...
@@ -415,20 +412,61 @@ function out = buildOneRep(name, idx, dec, obj, job, odName, networkFile, rho, a
     out.signature = [out.pathStr, '|', out.modeStr];
 end
 
+function checkDetailClosureConsistency(detail, totalCostRaw, tol, solutionType, pointName)
+    requiredFields = {'C_wait_s','C_trans_s','C_transfer_s','C_timeWindow_s','C_damage_s','C_tax_s','C_total_s','costAggregationWeights'};
+    for i = 1:numel(requiredFields)
+        if ~isfield(detail, requiredFields{i})
+            error('[Task3] Missing detail.%s (%s @ %s).', requiredFields{i}, solutionType, pointName);
+        end
+    end
+
+    c_wait_s = detail.C_wait_s(:)';
+    c_trans_s = detail.C_trans_s(:)';
+    c_transfer_s = detail.C_transfer_s(:)';
+    c_timeWindow_s = detail.C_timeWindow_s(:)';
+    c_damage_s = detail.C_damage_s(:)';
+    c_tax_s = detail.C_tax_s(:)';
+    c_total_s = detail.C_total_s(:)';
+    w_cost = detail.costAggregationWeights(:)';
+
+    n = numel(c_total_s);
+    if any([numel(c_wait_s), numel(c_trans_s), numel(c_transfer_s), numel(c_timeWindow_s), numel(c_damage_s), numel(c_tax_s), numel(w_cost)] ~= n)
+        error('[Task3] Scenario vector length mismatch in detail (%s @ %s).', solutionType, pointName);
+    end
+
+    c_total_from_components = c_wait_s + c_trans_s + c_transfer_s + c_timeWindow_s + c_damage_s + c_tax_s;
+    scenGap = c_total_s - c_total_from_components;
+    if any(~isfinite(scenGap)) || any(abs(scenGap) > tol)
+        k = find(~isfinite(scenGap) | abs(scenGap) > tol, 1, 'first');
+        error('[Task3] Scenario-level closure failed (%s @ %s, s=%d): gap=%.6e', ...
+            solutionType, pointName, k, scenGap(k));
+    end
+
+    if any(~isfinite(w_cost)) || any(w_cost < -1e-12) || abs(sum(w_cost) - 1) > 1e-10
+        error('[Task3] Invalid detail.costAggregationWeights (%s @ %s).', solutionType, pointName);
+    end
+
+    total_from_weights = sum(w_cost .* c_total_s);
+    if abs(total_from_weights - totalCostRaw) > tol
+        error('[Task3] Weighted total mismatch (%s @ %s): detailWeighted=%.10f, raw=%.10f, gap=%.6e', ...
+            solutionType, pointName, total_from_weights, totalCostRaw, total_from_weights - totalCostRaw);
+    end
+end
+
 function validateClosureBeforeExport(allRepRows, costClosureTol)
     if isempty(allRepRows)
         error('[Task3] No representative rows generated; export aborted.');
     end
     compSum = [allRepRows.C_wait]' + [allRepRows.C_trans]' + [allRepRows.C_transfer]' + ...
         [allRepRows.C_timeWindow]' + [allRepRows.C_damage]' + [allRepRows.C_tax]';
-    totalCost = [allRepRows.totalCost]';
+    totalCost = [allRepRows.totalCostRaw]';
     gap = compSum - totalCost;
     badMask = ~isfinite(gap) | abs(gap) > costClosureTol;
     if any(badMask)
         firstBad = find(badMask, 1, 'first');
         r = allRepRows(firstBad);
         error(['[Task3] Pre-export closure validation failed at row #%d (%s | %s): ' ...
-            'gap=%.6e, compSum=%.6f, totalCost=%.6f'], ...
+            'gap=%.6e, compSum=%.6f, totalCostRaw=%.6f'], ...
             firstBad, r.pointName, r.solutionType, gap(firstBad), compSum(firstBad), totalCost(firstBad));
     end
 end
