@@ -259,11 +259,10 @@ function [rep, ndStats] = extractRepresentativeSolutions(finalPopulation, job, s
     [reEvalObjAll, detailAll] = reEvaluatePopulation(popDec, job, odName, networkFile, rho, alpha, scenarioConfig);
     popObjGap = abs(popObj - reEvalObjAll);
     maxObjGap = max(popObjGap, [], 1);
-    isObjConsistentPopulation = all(maxObjGap <= objConsistencyTol);
-    if ~isObjConsistentPopulation
-        fprintf(2, ['[Task3][WARN] Population objective and export objective are inconsistent at %s: ' ...
+    if any(maxObjGap > objConsistencyTol)
+        error(['[Task3] Population objective and export objective are inconsistent at %s: ' ...
             'maxCostGap=%.6e, maxCarbonGap=%.6e (tol=%.1e). ' ...
-            'Representative extraction will continue using re-evaluated objectives only.\n'], ...
+            'Representative extraction aborted to keep label semantics valid.'], ...
             job.pointName, maxObjGap(1), maxObjGap(2), objConsistencyTol);
     end
 
@@ -297,9 +296,9 @@ function [rep, ndStats] = extractRepresentativeSolutions(finalPopulation, job, s
     [~, iTradeND] = min(score);
 
     rep = struct();
-    rep.CostBest   = buildOneRep('CostBest', ndIdx(iCostND), ndDec(iCostND,:), ndObj(iCostND,:), ndObjPop(iCostND,:), ndDetail{iCostND}, job, odName, networkFile, rho, alpha, scenarioConfig, costClosureTol);
-    rep.CarbonBest = buildOneRep('CarbonBest', ndIdx(iCarbonND), ndDec(iCarbonND,:), ndObj(iCarbonND,:), ndObjPop(iCarbonND,:), ndDetail{iCarbonND}, job, odName, networkFile, rho, alpha, scenarioConfig, costClosureTol);
-    rep.Tradeoff   = buildOneRep('Tradeoff', ndIdx(iTradeND), ndDec(iTradeND,:), ndObj(iTradeND,:), ndObjPop(iTradeND,:), ndDetail{iTradeND}, job, odName, networkFile, rho, alpha, scenarioConfig, costClosureTol);
+    rep.CostBest   = buildOneRep('CostBest', ndIdx(iCostND), ndDec(iCostND,:), ndObj(iCostND,:), ndDetail{iCostND}, job, odName, networkFile, rho, alpha, scenarioConfig, costClosureTol);
+    rep.CarbonBest = buildOneRep('CarbonBest', ndIdx(iCarbonND), ndDec(iCarbonND,:), ndObj(iCarbonND,:), ndDetail{iCarbonND}, job, odName, networkFile, rho, alpha, scenarioConfig, costClosureTol);
+    rep.Tradeoff   = buildOneRep('Tradeoff', ndIdx(iTradeND), ndDec(iTradeND,:), ndObj(iTradeND,:), ndDetail{iTradeND}, job, odName, networkFile, rho, alpha, scenarioConfig, costClosureTol);
 
     [~, iCostMaxND] = max(ndObj(:,1));
     [~, iCarbonMaxND] = max(ndObj(:,2));
@@ -343,9 +342,16 @@ function [rep, ndStats] = extractRepresentativeSolutions(finalPopulation, job, s
     ndStats.extremeSignatureSet = strjoin(unique({rep.CostBest.signature, rep.CarbonBest.signature, sigCostMax, sigCarbonMax}, 'stable'), ';');
 end
 
-function out = buildOneRep(name, idx, dec, obj, popObjRef, detail, job, odName, networkFile, rho, alpha, scenarioConfig, costClosureTol)
-    model = makeTask3Model(job, odName, networkFile, rho, alpha, scenarioConfig);
-
+function out = buildOneRep(name, idx, dec, obj, detail, job, odName, networkFile, rho, alpha, scenarioConfig, costClosureTol)
+    model = initModel(networkFile, odName);
+    model.carbonTax = job.carbonTax;
+    model.costOfUnitCarbon = job.carbonTax;
+    model.baseDemand = job.quantityOfCargo;
+    model.quantityOfCargo = job.quantityOfCargo;
+    model.demandUncertaintyRate = rho;
+    model.confidenceLevel = alpha;
+    model = applyScenarioConfig(model, scenarioConfig);
+    
     reEvalObj = obj;
     Qeq = model.getEquivalentDemand(model);
 
@@ -357,7 +363,7 @@ function out = buildOneRep(name, idx, dec, obj, popObjRef, detail, job, odName, 
     pathTransferType = callCompat(model.getPathTransferType, typeOfPath, model);
 
     [distanceOfPath, distanceArray, hasInvalidEdge] = getDistanceCompat(path, typeOfPath, model);
-
+    
     arriveTimeVec = getFieldOrDefault(detail, 'arriveTimeVector', []);
     if isempty(arriveTimeVec)
         [arriveTimeVec, ~] = callCompat(model.getArriveTime, distanceArray, typeOfPath, pathTransferType, model, Qeq);
@@ -426,11 +432,6 @@ function out = buildOneRep(name, idx, dec, obj, popObjRef, detail, job, odName, 
             'rawGap=%.6e. Export stage is validation-only and will not auto-correct.'], ...
             name, job.pointName, out.totalCostRaw, out.costClosureSum, out.costClosureGapRaw);
     end
-    if abs(out.populationObjGapCost) > costClosureTol || abs(out.populationObjGapCarbon) > costClosureTol
-        fprintf(2, ['[Task3][WARN] Representative pop/re-eval gap (%s @ %s): ' ...
-            'dCost=%.6e, dCarbon=%.6e. Re-evaluated objectives are used for labels/export.\n'], ...
-            name, job.pointName, out.populationObjGapCost, out.populationObjGapCarbon);
-    end
 
     out.signature = [out.pathStr, '|', out.modeStr];
     out.labelSemantic = mapLabelSemantic(name);
@@ -457,7 +458,13 @@ end
 
 
 function sig = getSignatureFromDec(dec, job, odName, networkFile, rho, alpha, scenarioConfig)
-    model = makeTask3Model(job, odName, networkFile, rho, alpha, scenarioConfig);
+    model = initModel(networkFile, odName);
+    model.carbonTax = job.carbonTax;
+    model.baseDemand = job.quantityOfCargo;
+    model.quantityOfCargo = job.quantityOfCargo;
+    model.demandUncertaintyRate = rho;
+    model.confidenceLevel = alpha;
+    model = applyScenarioConfig(model, scenarioConfig);
     [path, typeOfPath] = callCompat(model.analyseIndividual, dec, model);
     sig = [joinNum(path, '-', '%d'), '|', modeString(typeOfPath)];
 end
@@ -535,9 +542,6 @@ function rows = repsToRows(rep, job, rho, alpha, ndStats)
         rows(k).ndRatio = ndStats.ndRatio;
         rows(k).isAllPopulationNearlyND = ndStats.isAllPopulationNearlyND;
         rows(k).ndSemanticNote = ndStats.ndSemanticNote;
-        rows(k).maxObjGapCost = ndStats.maxObjGapCost;
-        rows(k).maxObjGapCarbon = ndStats.maxObjGapCarbon;
-        rows(k).isObjConsistentPopulation = ndStats.isObjConsistentPopulation;
         rows(k).ndDensityClass = ndStats.ndDensityClass;
         rows(k).ndEvidenceNote = ndStats.ndEvidenceNote;
         rows(k).labelSemantic = s.labelSemantic;
@@ -564,9 +568,6 @@ function row = buildNDStatsRow(ndStats, rep, job, saveFile, rho, alpha)
     row.nND = ndStats.nND;
     row.uniqueNDCount = ndStats.uniqueNDCount;
     row.ndRatio = ndStats.ndRatio;
-    row.maxObjGapCost = ndStats.maxObjGapCost;
-    row.maxObjGapCarbon = ndStats.maxObjGapCarbon;
-    row.isObjConsistentPopulation = ndStats.isObjConsistentPopulation;
     row.isAllPopulationNearlyND = ndStats.isAllPopulationNearlyND;
     row.ndSemanticNote = ndStats.ndSemanticNote;
     row.ndDensityClass = ndStats.ndDensityClass;
@@ -929,7 +930,14 @@ end
 
 
 function [reEvalObjAll, detailAll] = reEvaluatePopulation(popDec, job, odName, networkFile, rho, alpha, scenarioConfig)
-    model = makeTask3Model(job, odName, networkFile, rho, alpha, scenarioConfig);
+    model = initModel(networkFile, odName);
+    model.carbonTax = job.carbonTax;
+    model.costOfUnitCarbon = job.carbonTax;
+    model.baseDemand = job.quantityOfCargo;
+    model.quantityOfCargo = job.quantityOfCargo;
+    model.demandUncertaintyRate = rho;
+    model.confidenceLevel = alpha;
+    model = applyScenarioConfig(model, scenarioConfig);
 
     n = size(popDec,1);
     reEvalObjAll = nan(n,2);
@@ -939,17 +947,6 @@ function [reEvalObjAll, detailAll] = reEvaluatePopulation(popDec, job, odName, n
         reEvalObjAll(i,:) = obj;
         detailAll{i,1} = detail;
     end
-end
-
-function model = makeTask3Model(job, odName, networkFile, rho, alpha, scenarioConfig)
-    model = initModel(networkFile, odName);
-    model.carbonTax = job.carbonTax;
-    model.costOfUnitCarbon = job.carbonTax;
-    model.baseDemand = job.quantityOfCargo;
-    model.quantityOfCargo = job.quantityOfCargo;
-    model.demandUncertaintyRate = rho;
-    model.confidenceLevel = alpha;
-    model = applyScenarioConfig(model, scenarioConfig);
 end
 
 function cls = classifyNDDensity(nND)
