@@ -289,6 +289,9 @@ function [rep, ndStats] = extractRepresentativeSolutions(finalPopulation, job, s
     ndStats.nND = size(ndObj,1);
     ndStats.uniqueNDCount = size(unique(ndObj, 'rows'), 1);
     ndStats.ndRatio = ndStats.nND / max(ndStats.rawPopSize, 1);
+    ndStats.uniqueObjRatio = ndStats.uniqueObjCount / max(ndStats.rawPopSize, 1);
+    ndStats.uniqueNDRatio = ndStats.uniqueNDCount / max(ndStats.rawPopSize, 1);
+    ndStats.ndDuplicateRatio = 1 - ndStats.uniqueNDCount / max(ndStats.nND, 1);
     ndStats.isAllPopulationNearlyND = (ndStats.nND == ndStats.rawPopSize);
     ndStats.ndSemanticNote = '';
     if ndStats.nND == ndStats.rawPopSize
@@ -468,6 +471,9 @@ function row = buildNDStatsRow(ndStats, rep, job, saveFile, rho, alpha)
     row.nND = ndStats.nND;
     row.uniqueNDCount = ndStats.uniqueNDCount;
     row.ndRatio = ndStats.ndRatio;
+    ndStats.uniqueObjRatio = ndStats.uniqueObjCount / max(ndStats.rawPopSize, 1);
+    ndStats.uniqueNDRatio = ndStats.uniqueNDCount / max(ndStats.rawPopSize, 1);
+    ndStats.ndDuplicateRatio = 1 - ndStats.uniqueNDCount / max(ndStats.nND, 1);
     row.isAllPopulationNearlyND = ndStats.isAllPopulationNearlyND;
     row.ndSemanticNote = ndStats.ndSemanticNote;
     row.costRange = ndStats.costRange;
@@ -494,6 +500,9 @@ function row = buildSummaryRow(rep, job, saveFile, rho, alpha, ndStats)
     row.nND = ndStats.nND;
     row.uniqueNDCount = ndStats.uniqueNDCount;
     row.ndRatio = ndStats.ndRatio;
+    row.uniqueObjRatio = ndStats.uniqueObjRatio;
+    row.uniqueNDRatio = ndStats.uniqueNDRatio;
+    row.ndDuplicateRatio = ndStats.ndDuplicateRatio;
     row.isAllPopulationNearlyND = ndStats.isAllPopulationNearlyND;
     row.ndSemanticNote = ndStats.ndSemanticNote;
 
