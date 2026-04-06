@@ -108,6 +108,9 @@ for i = 1:numel(jobs)
     fprintf('[Task3] Representative extraction done (nondominated set): CostBest / CarbonBest / Tradeoff\n');
 end
 
+validateClosureBeforeExport(allRepRows, costClosureTol);
+
+
 %% =========================
 % 3) Reranking analysis (signature-based)
 % =========================
@@ -263,7 +266,14 @@ function [rep, ndStats] = extractRepresentativeSolutions(finalPopulation, job, s
     end
 
     [~, iCostND] = min(ndObj(:,1));
-    [~, iCarbonND] = min(ndObj(:,2));
+    carbonMin = min(ndObj(:,2));
+    iCarbonCand = find(abs(ndObj(:,2) - carbonMin) <= 1e-12);
+    if numel(iCarbonCand) == 1
+        iCarbonND = iCarbonCand;
+    else
+        [~, kMinCost] = min(ndObj(iCarbonCand,1));
+        iCarbonND = iCarbonCand(kMinCost);
+    end
 
     z = min(ndObj, [], 1);
     zMax = max(ndObj, [], 1);
@@ -322,7 +332,7 @@ function out = buildOneRep(name, idx, dec, obj, job, odName, networkFile, rho, a
     [distanceOfPath, distanceArray, hasInvalidEdge] = getDistanceCompat(path, typeOfPath, model);
     [arriveTime, ~] = callCompat(model.getArriveTime, distanceArray, typeOfPath, pathTransferType, model, Qeq);
 
-    [~, detail] = callCompat(model.getIndividualObjs, dec, model);
+    [reEvalObj, det ail] = model.getIndividualObjs(dec, model);
 
     lowCarbonModeRatio = calcLowCarbonModeRatio(distanceArray, typeOfPath);
 
@@ -330,8 +340,14 @@ function out = buildOneRep(name, idx, dec, obj, job, odName, networkFile, rho, a
     out.solutionType = name;
     out.populationIndex = idx;
 
-    out.totalCost = obj(1);
-    out.totalEmission = obj(2);
+    out.populationTotalCost = obj(1);
+    out.populationTotalEmission = obj(2);
+    out.totalCost = reEvalObj(1);
+    out.totalEmission = reEvalObj(2);
+    out.populationObjGapCost = out.populationTotalCost - out.totalCost;
+    out.populationObjGapCarbon = out.populationTotalEmission - out.totalEmission;
+    out.coreAggregationGap = getFieldOrDefault(detail, 'F_costAggregationGap', NaN);
+    out.isCoreCostClosed = getFieldOrDefault(detail, 'isCostClosedCore', true);
 
     out.arriveTime = arriveTime(end);
     out.arriveTimeFull = joinNum(arriveTime, '->', '%.2f');
@@ -358,16 +374,53 @@ function out = buildOneRep(name, idx, dec, obj, job, odName, networkFile, rho, a
     out.useCVaRAggregation = getFieldOrDefault(detail, 'useCVaRAggregation', false);
     out.riskBlend = getFieldOrDefault(detail, 'riskBlend', NaN);
 
+    compVec = [out.C_wait, out.C_trans, out.C_transfer, out.C_timeWindow, out.C_damage, out.C_tax];
+    if any(~isfinite(compVec))
+        error(['[Task3] Non-finite cost components detected (%s @ %s). ' ...
+            'Representative export aborted to prevent non-closed records.'], ...
+            name, job.pointName);
+    end
+
     out.costClosureSum = out.C_wait + out.C_trans + out.C_transfer + out.C_timeWindow + out.C_damage + out.C_tax;
     out.costClosureGap = out.costClosureSum - out.totalCost;
     out.isCostClosed = abs(out.costClosureGap) <= costClosureTol;
-    if ~out.isCostClosed
-        fprintf(2, ['[Task3][WARN] Cost closure mismatch (%s @ %s): gap=%.6e, sum=%.6f, totalCost=%.6f. ' ...
-            'Please verify result version/export chain first.\n'], ...
-            name, job.pointName, out.costClosureGap, out.costClosureSum, out.totalCost);
+    if ~out.isCoreCostClosed
+        fprintf(2, ['[Task3][WARN] Core aggregation diagnostic (%s @ %s): ' ...
+            'F_cost(components)-F_cost(totalScenario)=%.6e.\n'], ...
+            name, job.pointName, out.coreAggregationGap);
     end
 
+    if abs(out.populationObjGapCost) > costClosureTol || abs(out.populationObjGapCarbon) > costClosureTol
+        fprintf(2, ['[Task3][WARN] Population-object mismatch (%s @ %s): ' ...
+            'dCost=%.6e, dCarbon=%.6e. Export uses single-call re-evaluation.\n'], ...
+            name, job.pointName, out.populationObjGapCost, out.populationObjGapCarbon);
+    end
+
+    if ~out.isCoreCostClosed
+        error(['[Task3] Cost closure mismatch (%s @ %s): gap=%.6e, sum=%.6f, totalCost=%.6f'], ...
+            name, job.pointName, out.coreAggregationGap);
+    end
+
+
     out.signature = [out.pathStr, '|', out.modeStr];
+end
+
+function validateClosureBeforeExport(allRepRows, costClosureTol)
+    if isempty(allRepRows)
+        error('[Task3] No representative rows generated; export aborted.');
+    end
+    compSum = [allRepRows.C_wait]' + [allRepRows.C_trans]' + [allRepRows.C_transfer]' + ...
+        [allRepRows.C_timeWindow]' + [allRepRows.C_damage]' + [allRepRows.C_tax]';
+    totalCost = [allRepRows.totalCost]';
+    gap = compSum - totalCost;
+    badMask = ~isfinite(gap) | abs(gap) > costClosureTol;
+    if any(badMask)
+        firstBad = find(badMask, 1, 'first');
+        r = allRepRows(firstBad);
+        error(['[Task3] Pre-export closure validation failed at row #%d (%s | %s): ' ...
+            'gap=%.6e, compSum=%.6f, totalCost=%.6f'], ...
+            firstBad, r.pointName, r.solutionType, gap(firstBad), compSum(firstBad), totalCost(firstBad));
+    end
 end
 
 function sig = getSignatureFromDec(dec, job, odName, networkFile, rho, alpha, scenarioConfig)
@@ -439,6 +492,10 @@ function rows = repsToRows(rep, job, rho, alpha, ndStats)
         rows(k).costClosureSum = s.costClosureSum;
         rows(k).costClosureGap = s.costClosureGap;
         rows(k).isCostClosed = s.isCostClosed;
+        rows(k).coreAggregationGap = s.coreAggregationGap;
+        rows(k).isCoreCostClosed = s.isCoreCostClosed;
+        rows(k).coreAggregationGap = s.coreAggregationGap;
+        rows(k).isCoreCostClosed = s.isCoreCostClosed;
 
         rows(k).hasInvalidEdge = s.hasInvalidEdge;
         rows(k).finalPopulationSource = ndStats.finalPopulationSource;
